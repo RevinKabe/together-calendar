@@ -1,8 +1,11 @@
 // ONLY loaded by scripts/serve-fixture.mjs. No real account, credential or network.
 window.TOGETHER_CONFIG={supabaseUrl:'https://local-fixture.supabase.co',supabasePublishableKey:'sb_publishable_test_only'};
-const testUser={id:crypto.randomUUID(),email:'test@example.invalid',user_metadata:{display_name:'Test user'}};
+const testUser={id:'00000000-0000-4000-8000-000000000001',email:'test@example.invalid',user_metadata:{display_name:'Test user'}};
 let assurance='aal1', listener=()=>{}, sequence=0;
-const data={workspaces:[],workspace_members:[],encrypted_records:[]};
+let data=JSON.parse(localStorage.getItem('together-test-ciphertext-v2')||sessionStorage.getItem('together-test-ciphertext-v2')||'null')||{workspaces:[],workspace_members:[],encrypted_records:[]};
+function persistFixture(){localStorage.setItem('together-test-ciphertext-v2',JSON.stringify(data));}
+function syncFixture(){data=JSON.parse(localStorage.getItem('together-test-ciphertext-v2'))||data;}
+persistFixture();
 const diagnostics=document.createElement('p');diagnostics.id='fixture-status';diagnostics.setAttribute('role','status');
 diagnostics.textContent='LOCAL TEST: no network. Verify with test code 123456.';document.body.append(diagnostics);
 function inspect(value){
@@ -18,10 +21,12 @@ function query(table){
     single(){single=true;return builder;},maybeSingle(){single=true;return builder;},
     then(resolve,reject){return Promise.resolve().then(()=>{
       if(assurance!=='aal2')throw new Error('MFA required by test backend');
+      syncFixture();
       let rows=data[table].filter(row=>filters.every(([k,v])=>row[k]===v));
       if(operation==='insert'){inspect(values);const row={...values,created_at:new Date().toISOString(),updated_at:new Date().toISOString()};data[table].push(row);rows=[row];}
       if(operation==='update'){inspect(values);rows.forEach(row=>Object.assign(row,values,{updated_at:new Date().toISOString()}));}
       if(operation==='delete')data[table]=data[table].filter(row=>!rows.includes(row));
+      if(operation!=='select')persistFixture();
       if(range)rows=rows.slice(range[0],range[1]+1);
       return {data:structuredClone(single?rows[0]||null:rows),error:null};
     }).then(resolve,reject);}
@@ -33,10 +38,12 @@ window.supabase={createClient(url,key,options){
     from:query,
     async rpc(name,args){
       if(assurance!=='aal2')return {error:new Error('MFA required')};
+      syncFixture();
       inspect(args);
       if(name==='create_workspace'){
         data.workspaces.push({id:args.space_id,key_epoch:args.initial_epoch,encrypted_name:args.space_name,owner_id:testUser.id,created_at:new Date().toISOString()});
         data.workspace_members.push({workspace_id:args.space_id,user_id:testUser.id,display_name:'Test user'});
+        persistFixture();
         return {data:args.space_id,error:null};
       }
       if(name==='create_workspace_invite')return {data:'a'.repeat(64),error:null};
@@ -44,6 +51,7 @@ window.supabase={createClient(url,key,options){
         const space=data.workspaces.find(item=>item.id===args.target_workspace);
         Object.assign(space,{key_epoch:args.next_epoch,encrypted_name:args.space_name});
         args.replacements.forEach(item=>Object.assign(data.encrypted_records.find(row=>row.id===item.id),{ciphertext:item.ciphertext,key_epoch:args.next_epoch,updated_at:new Date().toISOString()}));
+        persistFixture();
       }
       return {data:null,error:null};
     },

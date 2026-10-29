@@ -1,4 +1,5 @@
 import { generateRecoveryKey, importRecoveryKey } from './crypto.js';
+import { createDeviceKeyStore } from './device-keys.js';
 import { unlockName, decodeRecord, loadEncryptedRecords, createEncryptedWorkspace, writeEncryptedRecord, rotateEncryptedWorkspace } from './encrypted-store.js';
 import { dateKey, parseDate, monthCells, shiftMonth, eventsOn, visibleTasks, cleanTitle } from './calendar.js';
 
@@ -27,6 +28,11 @@ const client = configured && window.supabase ? window.supabase.createClient(conf
 let demo = false, user = null, workspaces = [], workspace = null, events = [], tasks = [], members = [];
 let month = new Date(), selectedDate = null, taskFilter = 'open', authMode = 'signin', editing = null, generation = 0, poll = null, toastTimeout;
 const keys = new Map();
+const remembered = new Map();
+const deviceScope = JSON.stringify([config.supabaseUrl || 'unconfigured', new URL('./', location.href).pathname]);
+const deviceKeys = createDeviceKeyStore(deviceScope);
+const deviceChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('together-device-keys:' + deviceScope) : null;
+let pendingDeviceUnlock = null;
 let sessionReady = false, sessionGeneration = 0, vaultRevision = 0, mfaFactor = null, pendingRemoval = null, lastActivity = Date.now();
 let recovery = new URLSearchParams(location.hash.slice(1)).get('type') === 'recovery';
 const initialUrl = new URL(location.href);
@@ -87,6 +93,7 @@ function setAuthMode(mode) {
   $('auth-status').textContent = '';
 }
 function wipePlaintext() {
+  pendingDeviceUnlock = null;
   generation++; vaultRevision++; keys.clear(); events = []; tasks = []; selectedDate = null; editing = null;
   workspaces.forEach(space => { delete space.name; }); if (workspace) delete workspace.name;
   ['calendar-grid','task-list','day-events','member-list'].forEach(id => { $(id).replaceChildren(); });
@@ -96,12 +103,14 @@ function wipePlaintext() {
 }
 function lockVault(notify = true) {
   if (demo) return;
+  const verifyingUnlock = Boolean(pendingDeviceUnlock);
   wipePlaintext(); updateSpaceSelector(); render();
-  if (notify) toast('Your space is locked. Its key and decrypted plans were cleared from this tab.');
+  if (verifyingUnlock) $('mfa-dialog').close();
+  if (notify) toast(remembered.size ? 'Space locked. Your remembered key stays on this device; verify your authenticator to unlock.' : 'Your space is locked. Its key and decrypted plans were cleared from this tab.');
 }
 function authView() {
   sessionGeneration++; sessionReady = false; clearInterval(poll);
-  wipePlaintext(); demo = false; user = null; workspace = null; workspaces = []; members = [];
+  wipePlaintext(); remembered.clear(); demo = false; user = null; workspace = null; workspaces = []; members = [];
   document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
   $('workspace-select').replaceChildren(); $('user-name').textContent = 'You';
   $('mfa-secret').value = ''; $('mfa-code').value = ''; $('mfa-qr').removeAttribute('src'); mfaFactor = null;
@@ -109,7 +118,9 @@ function authView() {
   setAuthMode('signin');
 }
 async function prepareMfa() {
+  const expectedUser = user?.id, attempt = sessionGeneration, unlock = pendingDeviceUnlock;
   const factors = result(await client.auth.mfa.listFactors());
+  if (user?.id !== expectedUser || attempt !== sessionGeneration || (unlock && pendingDeviceUnlock !== unlock)) return;
   mfaFactor = factors.totp.find(factor => factor.status === 'verified')?.id || null;
   $('mfa-enroll').hidden = Boolean(mfaFactor); $('mfa-setup').hidden = true;
   $('mfa-secret').value = ''; $('mfa-qr').removeAttribute('src'); $('mfa-code').value = '';
@@ -134,7 +145,7 @@ async function enterSession(session) {
   $('user-name').textContent = displayName(); $('user-avatar').textContent = initials(displayName());
   $('user-mode').textContent = 'Verified · sign out'; $('account-button').ariaLabel = 'Sign out';
   $('new-workspace').hidden = false;
-  await loadWorkspaces();
+  await loadWorkspaces(undefined, true);
   if (attempt !== sessionGeneration) return;
   clearInterval(poll);
   poll = setInterval(() => { if (!document.hidden && workspace && !demo) refresh().catch(() => { $('sync-status').textContent = 'Sync paused · retrying'; }); }, 15000);
@@ -150,13 +161,52 @@ function showCreateSpace() {
 }
 function showUnlock() {
   if (!workspace || demo) return;
+  if (remembered.get(workspace.id) === workspace.key_epoch) {
+    pendingDeviceUnlock = { id: workspace.id, userId: user.id, revision: vaultRevision };
+    prepareMfa().catch(error => { pendingDeviceUnlock = null; toast(errorMessage(error)); });
+    return;
+  }
   $('unlock-form').reset(); $('unlock-status').textContent = ''; $('unlock-dialog').showModal();
 }
-async function loadWorkspaces(preferredId) {
+async function rememberKey(space, key, expectedUser = user?.id) {
+  await deviceKeys.save(expectedUser, space.id, space.key_epoch, key);
+  if (user?.id === expectedUser) remembered.set(space.id, space.key_epoch);
+  deviceChannel?.postMessage({ action: 'saved', userId: expectedUser, id: space.id, epoch: space.key_epoch });
+}
+async function forgetKey(space, expectedUser = user?.id) {
+  await deviceKeys.forget(expectedUser, space.id, space.key_epoch);
+  if (user?.id === expectedUser && remembered.get(space.id) === space.key_epoch) remembered.delete(space.id);
+  deviceChannel?.postMessage({ action: 'forgot', userId: expectedUser, id: space.id, epoch: space.key_epoch });
+}
+async function restoreDeviceKey(space, expectedUser, revision) {
+  const key = await deviceKeys.read(expectedUser, space.id, space.key_epoch);
+  if (!key || revision !== vaultRevision || user?.id !== expectedUser || !sessionReady || demo) return false;
+  let name;
+  try { name = await unlockName(space, key); }
+  catch {
+    // A damaged server envelope is not evidence that this local backup should be destroyed.
+    toast('The remembered key could not unlock this space. Enter its recovery key.');
+    return false;
+  }
+  if (revision !== vaultRevision || user?.id !== expectedUser || !sessionReady || demo) return false;
+  keys.set(space.id, { key, epoch: space.key_epoch }); remembered.set(space.id, space.key_epoch); space.name = name;
+  return true;
+}
+async function loadWorkspaces(preferredId, restoreRemembered = false) {
   const expectedUser = user?.id, revision = vaultRevision;
   const data = result(await client.from('workspaces').select('*').order('created_at'));
   if (user?.id !== expectedUser || demo || revision !== vaultRevision) return;
   workspaces = data;
+  if (restoreRemembered && sessionReady) {
+    try {
+      await deviceKeys.prune(expectedUser, data);
+      for (const space of data) {
+        if (revision !== vaultRevision || user?.id !== expectedUser) return;
+        await restoreDeviceKey(space, expectedUser, revision);
+      }
+    } catch (error) { toast(errorMessage(error)); }
+  }
+  if (user?.id !== expectedUser || demo || revision !== vaultRevision) return;
   for (const space of workspaces) {
     const cached = keys.get(space.id);
     if (cached && cached.epoch === space.key_epoch) {
@@ -181,11 +231,18 @@ async function refresh() {
   if (ticket !== generation || workspace?.id !== id || demo) return;
   const current = result(spaceData); members = result(memberData);
   if (!current || !members.some(member => member.user_id === user?.id)) {
+    const removed = workspace, expectedUser = user.id;
+    forgetKey(removed, expectedUser).catch(() => {});
     lockVault(false); workspace = null; await loadWorkspaces(); return;
   }
   const cached = keys.get(id);
   workspace = {...current, name:workspace.name}; workspaces = workspaces.map(item => item.id === id ? workspace : item);
   if (!cached || cached.epoch !== current.key_epoch) {
+    const oldEpoch = cached?.epoch || remembered.get(id);
+    if (oldEpoch && oldEpoch !== current.key_epoch) {
+      forgetKey({ id, key_epoch: oldEpoch }).catch(() => {});
+      remembered.delete(id);
+    }
     if (cached) lockVault(false);
     keys.delete(id); delete workspace.name; events=[]; tasks=[]; selectedDate=null;
     $('day-events').replaceChildren(); updateSpaceSelector(); render(); return;
@@ -232,6 +289,10 @@ function render() {
   const locked = !demo && workspace && !keys.has(workspace.id);
   $('vault-banner').hidden = !locked;
   $('lock-space').hidden = demo || !workspace || locked;
+  $('device-key').hidden = demo || !workspace;
+  $('vault-description').textContent = remembered.get(workspace?.id) === workspace?.key_epoch && workspace
+    ? 'A key is remembered in this browser. Verify your authenticator to unlock your plans.'
+    : 'Unlock with the recovery key from your password manager. You can choose to remember it in this browser.';
   $('calendar-section').hidden = Boolean(locked); $('tasks-section').hidden = Boolean(locked);
   document.querySelector('.overview').hidden = Boolean(locked);
   if (locked) $('sync-status').textContent = 'Locked';
@@ -302,10 +363,12 @@ function confirmAction(title = 'Delete this item?', description = 'This removes 
   $('confirm-delete').textContent = action;
   return new Promise(resolve => {
     const dialog = $('confirm-dialog');
-    function finish(value) { dialog.close(); dialog.removeEventListener('cancel', cancel); $('confirm-delete').onclick = null; $('cancel-delete').onclick = null; resolve(value); }
+    let settled = false;
+    function finish(value) { if (settled) return; settled = true; dialog.close(); dialog.removeEventListener('cancel', cancel); dialog.removeEventListener('close', closed); $('confirm-delete').onclick = null; $('cancel-delete').onclick = null; resolve(value); }
     function cancel(event) { event.preventDefault(); finish(false); }
+    function closed() { finish(false); }
     $('confirm-delete').onclick = () => finish(true); $('cancel-delete').onclick = () => finish(false);
-    dialog.addEventListener('cancel', cancel); dialog.showModal();
+    dialog.addEventListener('cancel', cancel); dialog.addEventListener('close', closed); dialog.showModal();
   });
 }
 async function showShare() {
@@ -414,11 +477,16 @@ $('workspace-form').onsubmit = event => {
     const name = $('workspace-name').value.trim(); if (!name) throw new Error('Please name your space.');
     if (!$('create-key-saved').checked) throw new Error('Save the recovery key before continuing.');
     const revision = vaultRevision;
+    const expectedUser = user.id, remember = $('create-remember').checked;
     const key = await importRecoveryKey($('create-recovery-key').value);
     const space = await createEncryptedWorkspace(client,name,key);
     if (revision === vaultRevision) keys.set(space.id,{key,epoch:space.key_epoch});
+    let storageError;
+    if (remember && revision === vaultRevision && user?.id === expectedUser) {
+      try { await rememberKey(space, key, expectedUser); } catch (error) { storageError = error; }
+    }
     $('create-recovery-key').value = ''; await loadWorkspaces(space.id);
-    $('workspace-dialog').close(); $('workspace-form').reset(); toast('Your encrypted space is ready.');
+    $('workspace-dialog').close(); $('workspace-form').reset(); toast(storageError ? 'Space created, but its key was not remembered. ' + errorMessage(storageError) : 'Your encrypted space is ready.');
   }, 'workspace-status');
 };
 $('invite-button').onclick = showShare; $('sidebar-invite').onclick = showShare;
@@ -450,6 +518,7 @@ function openRotation(removeUser = null) {
   $('share-dialog').close(); $('rotate-form').reset(); $('rotate-status').textContent = '';
   $('rotate-heading').textContent = removeUser ? 'Remove member & change key' : 'Change encryption key';
   $('rotate-recovery-key').value = generateRecoveryKey(); $('rotate-dialog').showModal();
+  $('rotate-remember').checked = remembered.get(workspace.id) === workspace.key_epoch;
 }
 $('lock-space').onclick = () => lockVault();
 $('unlock-space').onclick = showUnlock;
@@ -457,13 +526,18 @@ $('unlock-form').onsubmit = event => {
   event.preventDefault();
   busy($('unlock-form').querySelector('[type=submit]'),async () => {
     const id=workspace?.id, revision=vaultRevision; if(!id) throw new Error('Choose a space first.');
+    const expectedUser=user.id, remember=$('unlock-remember').checked;
     const key=await importRecoveryKey($('unlock-key').value); $('unlock-key').value='';
     const current=result(await client.from('workspaces').select('*').eq('id',id).single());
     const name=await unlockName(current,key);
     if(workspace?.id !== id || !user || revision !== vaultRevision) return;
     keys.set(id,{key,epoch:current.key_epoch}); workspace={...current,name};
     workspaces=workspaces.map(item=>item.id===id?workspace:item); updateSpaceSelector();
-    lastActivity=Date.now(); await refresh(); $('unlock-dialog').close(); toast('Space unlocked.');
+    let storageError;
+    if(remember) { try { await rememberKey(current,key,expectedUser); } catch(error) { storageError=error; } }
+    if (revision !== vaultRevision || user?.id !== expectedUser) return;
+    lastActivity=Date.now(); await refresh(); $('unlock-dialog').close();
+    toast(storageError ? 'Unlocked for this visit, but the key was not remembered. ' + errorMessage(storageError) : remember ? 'Space unlocked. Its key is remembered on this device.' : 'Space unlocked.');
   },'unlock-status');
 };
 $('copy-create-key').onclick=()=>copyKey('create-recovery-key');
@@ -475,12 +549,18 @@ $('rotate-form').onsubmit=event=>{
     if(!$('rotate-key-saved').checked) throw new Error('Save the new key before continuing.');
     const cached=keys.get(workspace?.id); if(!cached) throw new Error('Unlock this space first.');
     const revision=vaultRevision;
+    const expectedUser=user.id, oldSpace=workspace, remember=$('rotate-remember').checked;
     const key=await importRecoveryKey($('rotate-recovery-key').value);
     const updated=await rotateEncryptedWorkspace(client,workspace,cached.key,key,pendingRemoval);
     if (revision === vaultRevision) keys.set(updated.id,{key,epoch:updated.key_epoch});
+    let storageError;
+    try {
+      await forgetKey(oldSpace,expectedUser);
+      if(remember && revision === vaultRevision && user?.id === expectedUser) await rememberKey(updated,key,expectedUser);
+    } catch(error) { storageError=error; }
     workspace=updated;
     $('rotate-recovery-key').value=''; $('rotate-dialog').close(); await loadWorkspaces(updated.id);
-    toast('Key changed. Share the new key privately with remaining members.');
+    toast(storageError ? 'Key changed. Browser storage could not be updated; keep the new recovery key safe. ' + errorMessage(storageError) : 'Key changed. Share the new key privately with remaining members.');
   },'rotate-status');
 };
 ['workspace-dialog','rotate-dialog','unlock-dialog'].forEach(id=>{
@@ -501,12 +581,69 @@ $('mfa-form').onsubmit=event=>{
   event.preventDefault();
   busy($('mfa-verify'),async()=>{
     if(!mfaFactor) throw new Error('Set up an authenticator first.');
+    const pending = pendingDeviceUnlock;
     const code=$('mfa-code').value; $('mfa-code').value='';
     result(await client.auth.mfa.challengeAndVerify({factorId:mfaFactor,code}));
+    if (pending) {
+      if (pending.revision !== vaultRevision || pending.userId !== user?.id || workspace?.id !== pending.id) return;
+      const current=result(await client.from('workspaces').select('*').eq('id',pending.id).maybeSingle());
+      if (pending.revision !== vaultRevision || pending.userId !== user?.id || workspace?.id !== pending.id) return;
+      pendingDeviceUnlock=null; $('mfa-dialog').close();
+      if (!current) { lockVault(false); workspace=null; await loadWorkspaces(); return; }
+      workspace=current; workspaces=workspaces.map(space=>space.id===current.id?current:space);
+      let restored=false;
+      try { restored=await restoreDeviceKey(current,pending.userId,pending.revision); }
+      catch(error) { toast(errorMessage(error)); }
+      if (pending.revision !== vaultRevision || pending.userId !== user?.id) return;
+      if (!restored) { remembered.delete(current.id); render(); showUnlock(); return; }
+      lastActivity=Date.now(); updateSpaceSelector(); await refresh(); toast('Space unlocked with the key remembered on this device.');
+      return;
+    }
     const data=result(await client.auth.getSession()); await enterSession(data.session);
   },'mfa-status');
 };
 $('mfa-signout').onclick=()=>busy($('mfa-signout'),async()=>{result(await client.auth.signOut());authView();});
+function showDeviceKey() {
+  if (!workspace || demo) return;
+  const saved=remembered.get(workspace.id)===workspace.key_epoch;
+  $('device-key-description').textContent=saved ? 'This space’s key is remembered in this browser. It can unlock your plans after authenticator verification, including after signing in again.' : 'Remember this space’s key so you can unlock after authenticator verification without pasting the recovery key again.';
+  $('remember-device-key').hidden=saved; $('remember-device-key').disabled=!keys.has(workspace.id);
+  $('forget-device-key').hidden=!saved;
+  $('device-key-status').textContent=!saved && !keys.has(workspace.id) ? 'Unlock this space with its recovery key first.' : '';
+  $('device-key-dialog').showModal();
+}
+$('device-key').onclick=showDeviceKey;
+$('remember-device-key').onclick=()=>busy($('remember-device-key'),async()=>{
+  const space=workspace, cached=keys.get(space?.id), expectedUser=user?.id, revision=vaultRevision;
+  if (!cached || cached.epoch!==space.key_epoch) throw new Error('Unlock this space first.');
+  await rememberKey(space,cached.key,expectedUser);
+  if (revision!==vaultRevision || user?.id!==expectedUser) return;
+  $('device-key-dialog').close(); toast('This space’s key is now remembered on this device.');
+},'device-key-status');
+$('forget-device-key').onclick=()=>busy($('forget-device-key'),async()=>{
+  await forgetKey(workspace); lockVault(false); toast('Saved key removed from this browser. Enter your recovery key to unlock again.');
+},'device-key-status');
+$('forget-device-keys').onclick=()=>busy($('forget-device-keys'),async()=>{
+  if (!await confirmAction('Forget saved keys on this device?', 'Keep your recovery keys backed up. This removes this app’s saved keys from this browser. You will need those keys to unlock again.', 'Forget keys')) return;
+  await deviceKeys.forgetAll(); remembered.clear(); lockVault(false);
+  deviceChannel?.postMessage({action:'cleared'});
+  toast('This app’s saved keys have been removed from this browser.');
+});
+if (deviceChannel) deviceChannel.onmessage=event=>{
+  const message=event.data;
+  if (!message || !['saved','forgot','cleared'].includes(message.action)) return;
+  if (message.action==='cleared' || (message.action==='forgot' && message.userId===user?.id)) {
+    // Queue removal behind any save already pending in this tab as well.
+    const removal=message.action==='cleared' ? deviceKeys.forgetAll() : deviceKeys.forget(message.userId,message.id,message.epoch);
+    removal.catch(error=>toast(errorMessage(error)));
+    if (message.action==='cleared') remembered.clear();
+    else if (remembered.get(message.id)===message.epoch) remembered.delete(message.id);
+    if (!demo && user) { lockVault(false); toast('A saved key was removed in another tab. Your plans are locked.'); }
+  } else if (message.action==='saved' && message.userId===user?.id) {
+    remembered.set(message.id,message.epoch);
+    if (!demo && user) render();
+  }
+};
 ['pointerdown','keydown'].forEach(event=>document.addEventListener(event,()=>{lastActivity=Date.now();},{passive:true}));
 function checkIdle(){if(!demo && keys.size && Date.now()-lastActivity>5*60*1000) lockVault();}
 setInterval(checkIdle,15000);

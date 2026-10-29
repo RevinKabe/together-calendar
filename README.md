@@ -16,14 +16,18 @@ The built-in email sender remains sufficient for this account, whose email belon
 
 1. On each device, sign in with the existing shared app email and password. This is separate from the Supabase dashboard account.
 2. Enter a valid six-digit code from the authenticator enrolled for this account. Both people need access to valid codes; keep the authenticator setup backup private.
-3. Unlock the existing space using its saved recovery key. **Keep that key in your password manager.** The key never goes to Supabase. A password reset cannot recover a lost encryption key.
+3. Unlock the existing space using its recovery key. Optionally check **Remember the key on this device** on a trusted browser. After that, sign-in and authenticator verification unlock the space without entering the key again. **Keep that key in your password manager.** The key never goes to Supabase. A password reset cannot recover a lost encryption key.
 4. Add events and tasks. All content is encrypted before it leaves the browser. The shared account sees the same spaces on both devices; an invitation is unnecessary.
 
 Share the app credentials and recovery key privately through a trusted encrypted channel or password-manager sharing. Both people act as the same owner with the same permissions. There is no per-person audit trail or way to revoke only one person's account access. Do not share Supabase or GitHub administrator credentials.
 
 If switching to separate accounts later, first configure email delivery, then deliberately enable backend signups and set `allowSignups: true` in `site/config.js`. Invite the second account through **Invite people**, sharing the recovery key separately. Close backend signups and set the frontend flag back to false after registration. The frontend flag controls only the UI; Supabase enforces the actual signup policy.
 
-Use **Lock** before leaving a device. The app also locks after five minutes without keyboard/pointer activity and on page exit. Login sessions and content keys are held in tab memory, so reloading requires sign-in and unlocking again. Browser/OS memory and clipboard copies cannot be reliably erased by JavaScript.
+Use **Lock** before leaving a device. The app also locks after five minutes without keyboard/pointer activity and on page exit. Login sessions remain in tab memory, so reloading requires sign-in and authenticator verification again. With a remembered key, unlocking after Lock requires a fresh authenticator code; without one, it requires the recovery key.
+
+If your space is already unlocked, choose **Device key → Remember the key on this device**. The setting starts off and applies separately to each browser/profile and space. It stores a non-extractable Web Crypto key in IndexedDB, scoped to this app, account and encryption-key version. It does not save the recovery-key text or calendar content. Use **Device key → Forget this key and lock** to remove a saved copy. The sign-in page also has **Forget saved keys on this device** to remove all saved keys for this app. Signing out retains remembered keys; other tabs are notified when a saved key is forgotten.
+
+A key change removes the old saved copy and offers to remember the replacement. Other browsers need the new recovery key once. Cleared/evicted site data, private browsing or disabled storage may require entering it again. If saving fails, the app explicitly says the key was not remembered. Browser/OS memory, clipboard copies and backups cannot be reliably erased by JavaScript. Remembering a key increases trust in the device/browser; MFA is not a hardware or encryption barrier around the local key.
 
 Owners can revoke pending invitations, change the encryption key, or remove a member. Removal atomically changes the key and re-encrypts current records; save and privately redistribute the replacement key to remaining members. Old invitations are revoked. Previously downloaded copies cannot be recalled.
 
@@ -73,6 +77,8 @@ node scripts/serve-fixture.mjs
 ```
 
 Open http://127.0.0.1:4180. The fixture is outside `site/` and is never deployed. Read-only live anonymous-policy checks are available with `node scripts/check-hosted-access.mjs` using only the public client key.
+
+Open http://127.0.0.1:4180/__device-tests.html for 22 checks against native IndexedDB and Web Crypto: persistence/non-extractability, account/app/space separation, stale-version cleanup, forget ordering, malformed keys and unavailable storage. The app fixture retains fictional ciphertext in local storage to simulate a backend across reloads and tabs; it resets authenticator assurance on every reload and never calls Supabase.
 
 ## Repository and setup
 

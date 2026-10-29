@@ -8,6 +8,8 @@ http.createServer(async(req,res)=>{
     const path=new URL(req.url,'http://localhost').pathname;
     let body,type;
     if(path==='/__fixture.js'){body=await readFile('tests/browser-fixture.js');type='text/javascript';}
+    else if(path==='/__device-tests.html'){body=await readFile('tests/device-key-browser.html');type='text/html';}
+    else if(path==='/__device-tests.js'){body=await readFile('tests/device-key-browser.js');type='text/javascript';}
     else {
       const file=resolve(root,'.'+decodeURIComponent(path).replace(/\/$/,'/index.html'));
       if(!file.startsWith(root+sep)){res.writeHead(403).end();return;}
