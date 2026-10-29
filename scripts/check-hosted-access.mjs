@@ -25,3 +25,5 @@ assert.equal(settings.mailer_autoconfirm, false);
 assert.equal(settings.external.anonymous_users, false);
 assert.equal(settings.external.email, true);
 console.log('PASS: email confirmation required; anonymous login disabled');
+assert.equal(settings.disable_signup, scope.window.TOGETHER_CONFIG.allowSignups !== true);
+console.log('PASS: hosted signup policy matches the frontend configuration');

@@ -21,6 +21,7 @@ const storage = {
   remove(key, session = false) { try { (session ? sessionStorage : localStorage).removeItem(key); } catch { /* Storage may be disabled. */ } }
 };
 const config = window.TOGETHER_CONFIG || {};
+const signupEnabled = config.allowSignups === true;
 const configured = /^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(config.supabaseUrl || '') && Boolean(config.supabasePublishableKey);
 const client = configured && window.supabase ? window.supabase.createClient(config.supabaseUrl, config.supabasePublishableKey, { auth: { persistSession: false, autoRefreshToken: true, detectSessionInUrl: true } }) : null;
 let demo = false, user = null, workspaces = [], workspace = null, events = [], tasks = [], members = [];
@@ -67,6 +68,7 @@ function dateLabel(value) {
 }
 function baseUrl() { return new URL('./', location.href).href; }
 function setAuthMode(mode) {
+  if (mode === 'signup' && !signupEnabled) mode = 'signin';
   authMode = mode;
   $('name-label').hidden = mode !== 'signup';
   $('auth-name').required = mode === 'signup';
@@ -80,6 +82,7 @@ function setAuthMode(mode) {
   $('auth-description').textContent = { signin: 'Sign in and pick up where life left off.', signup: 'Create an account, then a space to share.', reset: 'We’ll email you a password reset link.', recovery: 'Choose a new password of at least 14 characters.' }[mode];
   $('auth-submit').textContent = { signin: 'Sign in ↗', signup: 'Create account ↗', reset: 'Send reset link ↗', recovery: 'Save new password ↗' }[mode];
   $('auth-toggle').textContent = mode === 'signin' ? 'Create an account' : 'Back to sign in';
+  $('auth-toggle').hidden = mode === 'signin' && !signupEnabled;
   $('forgot-password').hidden = mode !== 'signin';
   $('auth-status').textContent = '';
 }
@@ -510,6 +513,7 @@ setInterval(checkIdle,15000);
 document.addEventListener('visibilitychange',checkIdle);
 window.addEventListener('pagehide',()=>{if(!demo)lockVault(false);});
 async function boot() {
+  setAuthMode('signin');
   $('setup-notice').hidden = Boolean(client);
   if (!client) return;
   const data = result(await client.auth.getSession());

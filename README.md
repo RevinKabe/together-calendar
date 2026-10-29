@@ -8,18 +8,20 @@ A shared calendar with a to-do list underneath, email login, required authentica
 
 The public frontend connects to a Supabase **Free** project in **Central EU (Frankfurt), `eu-central-1`**. Its encrypted database schema, membership policies and MFA enforcement are installed. The exact GitHub Pages URL is configured as the authentication site and allowed redirect. Email confirmation is required; anonymous sign-in is disabled. Passwords must have at least 14 characters, with email recovery links expiring after 15 minutes.
 
-**Email setup remains required for collaborators:** Supabase's built-in sender only delivers to addresses belonging to the Supabase organization team. Configure custom SMTP before ordinary collaborators sign up or request a reset. Do not add collaborators as Supabase administrators to bypass this limit. See [Supabase email guidance](https://supabase.com/docs/guides/auth/auth-smtp). No real user's signup/email/MFA flow has been completed by automated tests.
+**Current access:** two people use one existing shared app account. Public signups are disabled in Supabase and the app. The account owner completed signup and reports successful setup; real passwords, authenticator secrets and recovery keys were entered privately, outside automated tests.
+
+The built-in email sender remains sufficient for this account, whose email belongs to the Supabase organization team, subject to its low sending limit. Custom SMTP is deferred. It is needed if separate accounts at other email addresses are added later. Do not add calendar collaborators as Supabase administrators to bypass this restriction. See [Supabase email guidance](https://supabase.com/docs/guides/auth/auth-smtp).
 
 ## Start using it
 
-1. Create an app account with a unique password of at least 14 characters and confirm the email. This is separate from your Supabase dashboard account.
-2. Sign in, set up an authenticator app and verify its six-digit code. Save a private backup of the authenticator setup secret. Existing users verify their authenticator on sign-in.
-3. Create a space. **Save its generated recovery key in your password manager before continuing.** The key never goes to Supabase. A password reset cannot recover a lost encryption key.
-4. Add events and tasks. All content is encrypted before it leaves the browser.
-5. Use **Invite people** to create a seven-day membership link. Send the link yourself. Share the recovery key separately through a trusted encrypted channel or password-manager sharing. An invite link alone cannot decrypt the plans.
-6. Each member creates their own account, verifies MFA, accepts the invitation and enters the space key. Members can read, edit and delete the shared items.
+1. On each device, sign in with the existing shared app email and password. This is separate from the Supabase dashboard account.
+2. Enter a valid six-digit code from the authenticator enrolled for this account. Both people need access to valid codes; keep the authenticator setup backup private.
+3. Unlock the existing space using its saved recovery key. **Keep that key in your password manager.** The key never goes to Supabase. A password reset cannot recover a lost encryption key.
+4. Add events and tasks. All content is encrypted before it leaves the browser. The shared account sees the same spaces on both devices; an invitation is unnecessary.
 
-This deployment is intended for two people. Once both accounts have been created, disable **Allow new users to sign up** in Supabase Authentication → Sign In / Providers. Existing users can continue signing in and resetting passwords.
+Share the app credentials and recovery key privately through a trusted encrypted channel or password-manager sharing. Both people act as the same owner with the same permissions. There is no per-person audit trail or way to revoke only one person's account access. Do not share Supabase or GitHub administrator credentials.
+
+If switching to separate accounts later, first configure email delivery, then deliberately enable backend signups and set `allowSignups: true` in `site/config.js`. Invite the second account through **Invite people**, sharing the recovery key separately. Close backend signups and set the frontend flag back to false after registration. The frontend flag controls only the UI; Supabase enforces the actual signup policy.
 
 Use **Lock** before leaving a device. The app also locks after five minutes without keyboard/pointer activity and on page exit. Login sessions and content keys are held in tab memory, so reloading requires sign-in and unlocking again. Browser/OS memory and clipboard copies cannot be reliably erased by JavaScript.
 
@@ -77,5 +79,7 @@ Open http://127.0.0.1:4180. The fixture is outside `site/` and is never deployed
 GitHub Actions checks JavaScript, runs unit tests and publishes **only `site/`** when `main` changes. Set Pages source to **GitHub Actions**. Paths support the repository subdirectory.
 
 For a fresh Supabase project: enable Data API, disable automatically exposing new tables, and enable automatic RLS. Run [`supabase/schema.sql`](supabase/schema.sql) once. It is a fresh-project schema, not a migration for earlier plaintext versions. Keep the private schema outside the Data API. Enable email confirmation and TOTP, disable anonymous sign-in, set password length to 14, configure exact production URLs and custom SMTP. Put only the public project URL and publishable key in `site/config.js`; never commit admin/service-role keys, database passwords, personal tokens, recovery keys or SMTP credentials.
+
+For initial account creation in a new deployment, temporarily set `allowSignups: true` with backend registration enabled. Disable both after the intended account(s) exist.
 
 The vendored client is `@supabase/supabase-js` **2.118.0**, from its official UMD distribution; see [`site/vendor/LICENSE.supabase`](site/vendor/LICENSE.supabase).

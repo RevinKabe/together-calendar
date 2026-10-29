@@ -14,6 +14,8 @@ All app tables have PostgreSQL row-level security. The anonymous role has no tab
 
 An invitation grants membership after account/MFA verification; it does not carry the encryption key. Any verified holder of the invitation may join until it expires or is revoked, so send it only to intended recipients. Anyone with both membership and the content key can read and modify the space. Members cannot change ownership or rotate keys. The public publishable API key is deliberately public and conveys no administrative privilege.
 
+The current deployment uses one shared app account for two people and has public signups disabled. Both people have the same identity, MFA factor and owner permissions; activity cannot be attributed to either person and access cannot be revoked individually. App account sharing does not require sharing GitHub or Supabase administrator access. The frontend signup flag is only a display control; the matching Supabase setting enforces closed registration.
+
 Owners rotate all current ciphertext atomically using a fresh key and epoch. Rotation checks the complete record set and prior timestamps, rejecting concurrent edits rather than losing them. Removing a member performs the same rotation and revokes pending links. Remaining members need the new key. Authorized members can retain any plaintext, old key or ciphertext they already downloaded; removal cannot erase their copies. This is shared-key encryption, without per-device identity verification, forward secrecy or cryptographic attribution of individual writers.
 
 ## Browser and deployment boundaries
@@ -30,6 +32,6 @@ Supabase Free limits, pauses or account/service loss can make the app unavailabl
 
 ## Validation and reporting
 
-Automated Web Crypto/unit tests and PostgreSQL policy tests exercise the real application modules/schema. Browser checks use fictional data and a local mock backend. Live read-only checks verify anonymous table denial, private-schema exclusion, email confirmation and anonymous-login settings. A real two-person email/MFA/invitation flow and independent security audit are still needed before relying on this app for highly sensitive material.
+Automated Web Crypto/unit tests and PostgreSQL policy tests exercise the real application modules/schema. Browser checks use fictional data and a local mock backend. Live read-only checks verify anonymous table denial, private-schema exclusion, email confirmation, anonymous-login settings and the closed-signup policy. The account owner completed private account setup. Real multi-device synchronization and an independent security audit remain unverified; automated checks do not provide a security certification.
 
 Do not post passwords, recovery keys, invitation links or private calendar data in public GitHub issues. Report a suspected vulnerability privately to the repository owner, using a channel you already trust.
