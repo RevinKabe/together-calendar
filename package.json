@@ -6,8 +6,8 @@
   "description": "A shared calendar and to-do list for the everyday.",
   "scripts": {
     "start": "node scripts/serve.mjs",
-    "test": "node --test tests/calendar.test.mjs",
+    "test": "node --test tests/*.test.mjs",
     "test:database": "node tests/database.mjs",
-    "check": "node --check site/app.js && node --check site/calendar.js"
+    "check": "node --check site/app.js && node --check site/calendar.js && node --check site/crypto.js && node --check site/encrypted-store.js"
   }
 }

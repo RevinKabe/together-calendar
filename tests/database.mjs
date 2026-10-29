@@ -1,78 +1,105 @@
-// PGlite executes the real PostgreSQL schema and RLS policies locally.
-// Bootstrap its pinned package using scripts/test-database.ps1 first.
+// Executes real PostgreSQL RLS and encrypted-record flows in PGlite.
 import { PGlite } from '../.tools/package/dist/index.js';
 import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import { generateRecoveryKey, importRecoveryKey, encrypt, decrypt, context } from '../site/crypto.js';
 const db = new PGlite();
 let checks = 0;
-const alice = '00000000-0000-0000-0000-000000000001';
-const bob = '00000000-0000-0000-0000-000000000002';
-const outsider = '00000000-0000-0000-0000-000000000003';
-async function as(id) { await db.exec(`reset role; set role authenticated; select set_config('request.jwt.claim.sub', '${id}', false);`); }
-async function admin() { await db.exec('reset role'); }
-async function scalar(sql, params = []) { return Object.values((await db.query(sql, params)).rows[0])[0]; }
-async function denied(sql, params = []) { await assert.rejects(db.query(sql, params)); checks++; }
-function equal(actual, expected) { assert.deepEqual(actual, expected); checks++; }
+const alice = crypto.randomUUID(), bob = crypto.randomUUID(), outsider = crypto.randomUUID();
+const space = crypto.randomUUID(), epoch = crypto.randomUUID(), record = crypto.randomUUID();
+const key = await importRecoveryKey(generateRecoveryKey());
+const encryptedName = await encrypt(key, {kind:'workspace', name:'Secret family calendar'}, context(space,epoch));
+const payload = {kind:'event',title:'Private medical appointment',notes:'Sensitive notes',event_date:'2026-10-29',start_time:'16:00',category:'sage'};
+const sealed = await encrypt(key,payload,context(space,epoch,record));
+async function as(id, aal='aal2') { await db.exec(`reset role; set role authenticated; select set_config('request.jwt.claim.sub','${id}',false); select set_config('request.jwt.claim.aal','${aal}',false);`); }
+async function scalar(sql, params=[]) { return Object.values((await db.query(sql,params)).rows[0])[0]; }
+async function denied(sql, params=[]) { await assert.rejects(db.query(sql,params)); checks++; }
+function equal(a,b) { assert.deepEqual(a,b); checks++; }
+const json = value => JSON.stringify(value);
 try {
   await db.exec(`create role anon; create role authenticated; create schema auth;
     create table auth.users(id uuid primary key, raw_user_meta_data jsonb default '{}');
-    create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
-    grant usage on schema auth to anon, authenticated; grant execute on function auth.uid() to anon, authenticated;
-    insert into auth.users values ('${alice}', '{"display_name":"Alice"}'), ('${bob}', '{"display_name":"Bob"}'), ('${outsider}', '{"display_name":"Outsider"}');`);
-  await db.exec(await readFile(new URL('../supabase/schema.sql', import.meta.url), 'utf8'));
+    create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
+    create function auth.jwt() returns jsonb language sql stable as $$ select jsonb_build_object('aal',current_setting('request.jwt.claim.aal',true)) $$;
+    grant usage on schema auth to anon, authenticated; grant execute on all functions in schema auth to anon, authenticated;
+    insert into auth.users values ('${alice}','{"display_name":"Alice"}'),('${bob}','{"display_name":"Bob"}'),('${outsider}','{"display_name":"Outsider"}');`);
+  await db.exec(await readFile(new URL('../supabase/schema.sql',import.meta.url),'utf8'));
   await db.exec('set role anon');
-  await denied('select * from public.events');
-  await denied("select public.create_workspace('Anonymous space')");
-  await denied("select public.join_workspace(repeat('a',64))");
+  await denied('select * from public.encrypted_records');
+  await denied('select public.create_workspace($1,$2,$3)',[space,epoch,json(encryptedName)]);
+  await as(alice,'aal1');
+  await denied('select public.create_workspace($1,$2,$3)',[space,epoch,json(encryptedName)]);
   await as(alice);
-  const space = await scalar("select public.create_workspace('Our everyday')");
-  equal(await scalar('select count(*)::int from public.workspace_members'), 1);
-  const event = await scalar("insert into public.events(workspace_id,title,event_date) values ($1,'Dinner','2026-10-29') returning id", [space]);
-  const task = await scalar("insert into public.tasks(workspace_id,title) values ($1,'Shopping') returning id", [space]);
-  const token = await scalar('select public.create_workspace_invite($1)', [space]);
-  equal(token.length, 64);
+  equal(await scalar('select public.create_workspace($1,$2,$3)',[space,epoch,json(encryptedName)]),space);
+  await db.query('insert into public.encrypted_records(id,workspace_id,key_epoch,ciphertext) values($1,$2,$3,$4)',[record,space,epoch,json(sealed)]);
+  const token = await scalar('select public.create_workspace_invite($1)',[space]);
+  equal(token.length,64);
+  equal(await scalar('select count(*)::int from public.workspace_members'),1);
   await denied('select * from private.workspace_invites');
-  await denied('update public.workspaces set owner_id=$1 where id=$2', [bob, space]);
+  await denied('update public.workspaces set owner_id=$1 where id=$2',[bob,space]);
+  await denied('insert into public.encrypted_records(id,workspace_id,key_epoch,ciphertext) values($1,$2,$3,$4)',[crypto.randomUUID(),space,epoch,json({...sealed,title:'plaintext leak'})]);
+  await denied('insert into public.encrypted_records(id,workspace_id,key_epoch,ciphertext) values($1,$2,$3,$4)',[crypto.randomUUID(),space,crypto.randomUUID(),json(sealed)]);
+  await as(alice,'aal1');
+  equal(await scalar('select count(*)::int from public.encrypted_records'),0);
+  equal(await scalar('select count(*)::int from public.workspaces'),0);
+  await denied('select public.create_workspace_invite($1)',[space]);
+  await denied('select public.revoke_workspace_invites($1)',[space]);
+  await denied('select public.join_workspace($1)',[token]);
   await as(outsider);
-  const otherSpace = await scalar("select public.create_workspace('Separate space')");
-  equal(await scalar('select count(*)::int from public.events'), 0);
-  equal(await scalar('select count(*)::int from public.tasks'), 0);
-  equal(await scalar('select count(*)::int from public.workspaces where id=$1', [space]), 0);
-  equal((await db.query('update public.tasks set completed=true where id=$1 returning id', [task])).rows.length, 0);
-  equal((await db.query('delete from public.events where id=$1 returning id', [event])).rows.length, 0);
-  await denied("insert into public.events(workspace_id,title,event_date) values ($1,'Intrusion','2026-10-30')", [space]);
-  await denied('select public.create_workspace_invite($1)', [space]);
-  await denied('select public.revoke_workspace_invites($1)', [space]);
-  await denied('select public.remove_workspace_member($1,$2)', [space, alice]);
-  await denied("insert into public.workspace_members(workspace_id,user_id,display_name) values ($1,$2,'Intruder')", [space, outsider]);
+  equal(await scalar('select count(*)::int from public.encrypted_records'),0);
+  equal(await scalar('select count(*)::int from public.workspace_members'),0);
+  equal((await db.query('update public.encrypted_records set ciphertext=$1 where id=$2 returning id',[json(sealed),record])).rows.length,0);
+  equal((await db.query('delete from public.encrypted_records where id=$1 returning id',[record])).rows.length,0);
+  await denied('insert into public.encrypted_records(id,workspace_id,key_epoch,ciphertext) values($1,$2,$3,$4)',[crypto.randomUUID(),space,epoch,json(sealed)]);
+  await denied('select public.create_workspace_invite($1)',[space]);
+  await denied('select public.revoke_workspace_invites($1)',[space]);
+  await denied("insert into public.workspace_members(workspace_id,user_id,display_name) values($1,$2,'intruder')",[space,outsider]);
   await denied("select public.join_workspace(repeat('0',64))");
   await as(bob);
-  equal(await scalar('select public.join_workspace($1)', [token]), space);
-  equal(await scalar('select public.join_workspace($1)', [token]), space); // joining twice is safe
-  equal(await scalar('select count(*)::int from public.events'), 1);
-  equal(await scalar('select count(*)::int from public.workspace_members'), 2);
-  await db.query('update public.tasks set completed=true where id=$1', [task]);
-  equal(await scalar('select completed from public.tasks where id=$1', [task]), true);
-  await db.query("update public.events set title='Shared dinner' where id=$1", [event]);
-  await denied('update public.events set workspace_id=$1 where id=$2', [otherSpace, event]);
-  await denied('update public.tasks set created_by=$1 where id=$2', [alice, task]);
-  await denied("insert into public.tasks(workspace_id,title,created_by) values ($1,'Spoof',$2)", [space, alice]);
-  await denied('select public.create_workspace_invite($1)', [space]);
+  equal(await scalar('select public.join_workspace($1)',[token]),space);
+  equal(await scalar('select public.join_workspace($1)',[token]),space);
+  equal(await scalar('select count(*)::int from public.encrypted_records'),1);
+  const stored = (await db.query('select *,updated_at::text as updated_at from public.encrypted_records where id=$1',[record])).rows[0];
+  equal(json(stored).includes(payload.title),false);
+  equal(json(stored.ciphertext).includes(payload.event_date),false);
+  equal(await decrypt(key,stored.ciphertext,context(space,epoch,record)),payload);
+  await assert.rejects(decrypt(await importRecoveryKey(generateRecoveryKey()),stored.ciphertext,context(space,epoch,record))); checks++;
+  const changed = await encrypt(key,{...payload,title:'A changed private plan'},context(space,epoch,record));
+  await db.query('update public.encrypted_records set ciphertext=$1 where id=$2',[json(changed),record]);
+  equal((await db.query('update public.encrypted_records set ciphertext=$1 where id=$2 and updated_at=$3 returning id',[json(sealed),record,stored.updated_at])).rows.length,0);
+  await denied('update public.encrypted_records set workspace_id=$1 where id=$2',[crypto.randomUUID(),record]);
+  await denied('update public.encrypted_records set created_by=$1 where id=$2',[alice,record]);
+  await denied('insert into public.encrypted_records(id,workspace_id,key_epoch,ciphertext,created_by) values($1,$2,$3,$4,$5)',[crypto.randomUUID(),space,epoch,json(sealed),alice]);
+  await denied('select public.create_workspace_invite($1)',[space]);
+  const nextEpoch=crypto.randomUUID(),nextKey=await importRecoveryKey(generateRecoveryKey());
+  const nextName=await encrypt(nextKey,{kind:'workspace',name:'Secret family calendar'},context(space,nextEpoch));
+  const nextCipher=await encrypt(nextKey,payload,context(space,nextEpoch,record));
+  let current=(await db.query('select *,updated_at::text as updated_at from public.encrypted_records where id=$1',[record])).rows[0];
+  const replacement=[{id:record,expected_updated_at:current.updated_at,ciphertext:nextCipher}];
+  const rotate='select public.rotate_workspace_key($1,$2,$3,$4,$5,$6)';
+  await denied(rotate,[space,epoch,nextEpoch,json(nextName),json(replacement),null]);
   await as(alice);
-  equal(await scalar('select title from public.events where id=$1', [event]), 'Shared dinner');
-  await denied('select public.remove_workspace_member($1,$2)', [space, alice]);
-  await db.query('select public.remove_workspace_member($1,$2)', [space, bob]);
+  await denied(rotate,[space,epoch,nextEpoch,json(nextName),'[]',bob]);
+  await denied(rotate,[space,epoch,nextEpoch,json(nextName),json([{...replacement[0],expected_updated_at:stored.updated_at}]),bob]);
+  equal(await scalar('select key_epoch from public.workspaces where id=$1',[space]),epoch);
+  equal(await scalar('select count(*)::int from public.workspace_members'),2);
+  await denied(rotate,[space,epoch,nextEpoch,json(nextName),json(replacement),alice]);
+  await db.query(rotate,[space,epoch,nextEpoch,json(nextName),json(replacement),bob]);
+  equal(await scalar('select key_epoch from public.workspaces where id=$1',[space]),nextEpoch);
+  equal(await scalar('select count(*)::int from public.workspace_members'),1);
+  current=(await db.query('select * from public.encrypted_records where id=$1',[record])).rows[0];
+  equal(await decrypt(nextKey,current.ciphertext,context(space,nextEpoch,record)),payload);
+  await assert.rejects(decrypt(key,current.ciphertext,context(space,nextEpoch,record))); checks++;
+  await denied('insert into public.encrypted_records(id,workspace_id,key_epoch,ciphertext) values($1,$2,$3,$4)',[crypto.randomUUID(),space,epoch,json(sealed)]);
   await as(bob);
-  equal(await scalar('select count(*)::int from public.tasks'), 0);
-  equal(await scalar('select count(*)::int from public.events'), 0);
-  await denied('select public.join_workspace($1)', [token]);
+  equal(await scalar('select count(*)::int from public.encrypted_records'),0);
+  await denied('select public.join_workspace($1)',[token]);
   await as(alice);
-  const expiringToken = await scalar('select public.create_workspace_invite($1)', [space]);
-  await admin(); await db.exec("update private.workspace_invites set expires_at=now()-interval '1 second'");
-  await as(bob); await denied('select public.join_workspace($1)', [expiringToken]);
-  await as(alice);
-  const revokedToken = await scalar('select public.create_workspace_invite($1)', [space]);
-  await db.query('select public.revoke_workspace_invites($1)', [space]);
-  await as(bob); await denied('select public.join_workspace($1)', [revokedToken]);
-  console.log(`PASS: ${checks} PostgreSQL access, invitation, isolation and shared-edit checks.`);
-} finally { await db.close(); }
+  const expired=await scalar('select public.create_workspace_invite($1)',[space]);
+  await db.exec("reset role; update private.workspace_invites set expires_at=now()-interval '1 second'");
+  await as(bob); await denied('select public.join_workspace($1)',[expired]);
+  await as(alice); const revoked=await scalar('select public.create_workspace_invite($1)',[space]);
+  await db.query('select public.revoke_workspace_invites($1)',[space]);
+  await as(bob); await denied('select public.join_workspace($1)',[revoked]);
+  console.log(`PASS: ${checks} database, MFA, ciphertext, conflict and key-rotation checks.`);
+} catch(error) { console.error(error.message); process.exitCode=1; } finally { await db.close(); }

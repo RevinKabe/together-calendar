@@ -1,3 +1,5 @@
+import { generateRecoveryKey, importRecoveryKey } from './crypto.js';
+import { unlockName, decodeRecord, loadEncryptedRecords, createEncryptedWorkspace, writeEncryptedRecord, rotateEncryptedWorkspace } from './encrypted-store.js';
 import { dateKey, parseDate, monthCells, shiftMonth, eventsOn, visibleTasks, cleanTitle } from './calendar.js';
 
 const $ = (id) => document.getElementById(id);
@@ -20,11 +22,17 @@ const storage = {
 };
 const config = window.TOGETHER_CONFIG || {};
 const configured = /^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(config.supabaseUrl || '') && Boolean(config.supabasePublishableKey);
-const client = configured && window.supabase ? window.supabase.createClient(config.supabaseUrl, config.supabasePublishableKey) : null;
+const client = configured && window.supabase ? window.supabase.createClient(config.supabaseUrl, config.supabasePublishableKey, { auth: { persistSession: false, autoRefreshToken: true, detectSessionInUrl: true } }) : null;
 let demo = false, user = null, workspaces = [], workspace = null, events = [], tasks = [], members = [];
 let month = new Date(), selectedDate = null, taskFilter = 'open', authMode = 'signin', editing = null, generation = 0, poll = null, toastTimeout;
+const keys = new Map();
+let sessionReady = false, sessionGeneration = 0, vaultRevision = 0, mfaFactor = null, pendingRemoval = null, lastActivity = Date.now();
 let recovery = new URLSearchParams(location.hash.slice(1)).get('type') === 'recovery';
 const initialUrl = new URL(location.href);
+const fragmentInvite = new URLSearchParams(initialUrl.hash.slice(1)).get('invite');
+if (fragmentInvite && /^[a-f0-9]{64}$/.test(fragmentInvite)) {
+  storage.set('together-invite',fragmentInvite,true); initialUrl.hash=''; history.replaceState(null,'',initialUrl.pathname+initialUrl.search);
+}
 if (initialUrl.searchParams.has('invite')) {
   const token = initialUrl.searchParams.get('invite');
   if (/^[a-f0-9]{64}$/.test(token)) storage.set('together-invite', token, true);
@@ -64,62 +72,128 @@ function setAuthMode(mode) {
   $('auth-name').required = mode === 'signup';
   $('password-label').hidden = mode === 'reset';
   $('auth-password').required = mode !== 'reset';
+  $('auth-password').minLength = mode === 'signin' ? 1 : 14;
   $('auth-password').autocomplete = ['signup', 'recovery'].includes(mode) ? 'new-password' : 'current-password';
   $('auth-email').closest('label').hidden = mode === 'recovery';
   $('auth-email').required = mode !== 'recovery';
   $('auth-heading').textContent = { signin: 'Welcome to your everyday.', signup: 'Make room for your people.', reset: 'Let’s get you back in.', recovery: 'A fresh start.' }[mode];
-  $('auth-description').textContent = { signin: 'Sign in and pick up where life left off.', signup: 'Create an account, then a space to share.', reset: 'We’ll email you a password reset link.', recovery: 'Choose a new password of at least 10 characters.' }[mode];
+  $('auth-description').textContent = { signin: 'Sign in and pick up where life left off.', signup: 'Create an account, then a space to share.', reset: 'We’ll email you a password reset link.', recovery: 'Choose a new password of at least 14 characters.' }[mode];
   $('auth-submit').textContent = { signin: 'Sign in ↗', signup: 'Create account ↗', reset: 'Send reset link ↗', recovery: 'Save new password ↗' }[mode];
   $('auth-toggle').textContent = mode === 'signin' ? 'Create an account' : 'Back to sign in';
   $('forgot-password').hidden = mode !== 'signin';
   $('auth-status').textContent = '';
 }
+function wipePlaintext() {
+  generation++; vaultRevision++; keys.clear(); events = []; tasks = []; selectedDate = null; editing = null;
+  workspaces.forEach(space => { delete space.name; }); if (workspace) delete workspace.name;
+  ['calendar-grid','task-list','day-events','member-list'].forEach(id => { $(id).replaceChildren(); });
+  ['editor-form','workspace-form','unlock-form','rotate-form','quick-task-form'].forEach(id => $(id).reset());
+  ['create-recovery-key','rotate-recovery-key','unlock-key','invite-link'].forEach(id => { $(id).value = ''; });
+  document.querySelectorAll('dialog[open]:not(#mfa-dialog)').forEach(dialog => dialog.close());
+}
+function lockVault(notify = true) {
+  if (demo) return;
+  wipePlaintext(); updateSpaceSelector(); render();
+  if (notify) toast('Your space is locked. Its key and decrypted plans were cleared from this tab.');
+}
 function authView() {
-  generation++;
-  clearInterval(poll);
-  demo = false; user = null; workspace = null; workspaces = []; events = []; tasks = []; members = [];
+  sessionGeneration++; sessionReady = false; clearInterval(poll);
+  wipePlaintext(); demo = false; user = null; workspace = null; workspaces = []; members = [];
   document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
-  $('app-view').hidden = true; $('auth-view').hidden = false;
-  $('auth-password').value = '';
+  $('workspace-select').replaceChildren(); $('user-name').textContent = 'You';
+  $('mfa-secret').value = ''; $('mfa-code').value = ''; $('mfa-qr').removeAttribute('src'); mfaFactor = null;
+  $('app-view').hidden = true; $('auth-view').hidden = false; $('auth-password').value = '';
   setAuthMode('signin');
+}
+async function prepareMfa() {
+  const factors = result(await client.auth.mfa.listFactors());
+  mfaFactor = factors.totp.find(factor => factor.status === 'verified')?.id || null;
+  $('mfa-enroll').hidden = Boolean(mfaFactor); $('mfa-setup').hidden = true;
+  $('mfa-secret').value = ''; $('mfa-qr').removeAttribute('src'); $('mfa-code').value = '';
+  $('mfa-verify').disabled = !mfaFactor; $('mfa-status').textContent = '';
+  $('mfa-description').textContent = mfaFactor ? 'Enter the six-digit code from your authenticator. The database requires this verification before it allows any calendar access.' : 'Set up an authenticator app before creating or opening a calendar. Keep a private backup of its setup code.';
+  if (!$('mfa-dialog').open) $('mfa-dialog').showModal();
 }
 async function enterSession(session) {
   if (!session?.user) { authView(); return; }
-  if (user?.id === session.user.id && !demo && !$('app-view').hidden) return;
-  demo = false; user = session.user;
+  if (user?.id === session.user.id && sessionReady && !demo && !$('app-view').hidden) return;
+  const attempt = ++sessionGeneration;
+  demo = false; user = session.user; lastActivity = Date.now();
+  const assurance = result(await client.auth.mfa.getAuthenticatorAssuranceLevel());
+  if (attempt !== sessionGeneration) return;
+  if (assurance.currentLevel !== 'aal2') {
+    sessionReady = false; $('app-view').hidden = true; $('auth-view').hidden = false;
+    await prepareMfa(); return;
+  }
+  sessionReady = true;
+  $('mfa-dialog').close(); $('mfa-secret').value = ''; $('mfa-code').value = ''; $('mfa-qr').removeAttribute('src');
   $('auth-view').hidden = true; $('app-view').hidden = false; $('demo-banner').hidden = true;
   $('user-name').textContent = displayName(); $('user-avatar').textContent = initials(displayName());
-  $('user-mode').textContent = 'Sign out'; $('account-button').ariaLabel = `Sign out ${displayName()}`;
+  $('user-mode').textContent = 'Verified · sign out'; $('account-button').ariaLabel = 'Sign out';
   $('new-workspace').hidden = false;
-  try { await loadWorkspaces(); } catch (error) { toast(errorMessage(error)); }
+  await loadWorkspaces();
+  if (attempt !== sessionGeneration) return;
   clearInterval(poll);
   poll = setInterval(() => { if (!document.hidden && workspace && !demo) refresh().catch(() => { $('sync-status').textContent = 'Sync paused · retrying'; }); }, 15000);
   if (storage.get('together-invite', true)) $('join-dialog').showModal();
 }
+function updateSpaceSelector() {
+  $('workspace-select').innerHTML = workspaces.map(item => '<option value="'+esc(item.id)+'">'+esc(item.name || 'Locked space · '+item.id.slice(0,6))+'</option>').join('') || '<option value="">Choose a space</option>';
+  if (workspace) $('workspace-select').value = workspace.id;
+}
+function showCreateSpace() {
+  $('workspace-form').reset(); $('workspace-status').textContent = '';
+  $('create-recovery-key').value = generateRecoveryKey(); $('workspace-dialog').showModal();
+}
+function showUnlock() {
+  if (!workspace || demo) return;
+  $('unlock-form').reset(); $('unlock-status').textContent = ''; $('unlock-dialog').showModal();
+}
 async function loadWorkspaces(preferredId) {
-  const expectedUser = user?.id;
+  const expectedUser = user?.id, revision = vaultRevision;
   const data = result(await client.from('workspaces').select('*').order('created_at'));
-  if (user?.id !== expectedUser || demo) return;
+  if (user?.id !== expectedUser || demo || revision !== vaultRevision) return;
   workspaces = data;
-  $('workspace-select').innerHTML = workspaces.map(item => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join('') || '<option value="">Choose a space</option>';
+  for (const space of workspaces) {
+    const cached = keys.get(space.id);
+    if (cached && cached.epoch === space.key_epoch) {
+      const name = await unlockName(space,cached.key);
+      if (revision !== vaultRevision || user?.id !== expectedUser) return;
+      space.name = name;
+    }
+    else keys.delete(space.id);
+  }
   workspace = workspaces.find(item => item.id === preferredId) || workspaces.find(item => item.id === workspace?.id) || workspaces[0] || null;
-  if (workspace) { $('workspace-select').value = workspace.id; await refresh(); }
-  else { events = []; tasks = []; members = []; render(); if (!storage.get('together-invite', true)) $('workspace-dialog').showModal(); }
+  updateSpaceSelector();
+  if (workspace) { await refresh(); if (!keys.has(workspace?.id) && !storage.get('together-invite',true)) showUnlock(); }
+  else { events = []; tasks = []; members = []; render(); if (!storage.get('together-invite',true)) showCreateSpace(); }
 }
 async function refresh() {
   if (!workspace) return;
   const id = workspace.id, ticket = ++generation;
-  const [eventData, taskData, memberData] = await Promise.all([
-    client.from('events').select('*').eq('workspace_id', id).order('event_date'),
-    client.from('tasks').select('*').eq('workspace_id', id).order('created_at'),
-    client.from('workspace_members').select('user_id,display_name').eq('workspace_id', id)
+  const [spaceData, memberData] = await Promise.all([
+    client.from('workspaces').select('*').eq('id',id).maybeSingle(),
+    client.from('workspace_members').select('user_id,display_name').eq('workspace_id',id)
   ]);
   if (ticket !== generation || workspace?.id !== id || demo) return;
-  events = result(eventData); tasks = result(taskData); members = result(memberData);
-  // Losing membership must clear already displayed data, even while the page stays open.
-  if (!members.some(member => member.user_id === user?.id)) { workspace = null; await loadWorkspaces(); return; }
-  $('sync-status').textContent = 'Up to date';
-  render();
+  const current = result(spaceData); members = result(memberData);
+  if (!current || !members.some(member => member.user_id === user?.id)) {
+    lockVault(false); workspace = null; await loadWorkspaces(); return;
+  }
+  const cached = keys.get(id);
+  workspace = {...current, name:workspace.name}; workspaces = workspaces.map(item => item.id === id ? workspace : item);
+  if (!cached || cached.epoch !== current.key_epoch) {
+    if (cached) lockVault(false);
+    keys.delete(id); delete workspace.name; events=[]; tasks=[]; selectedDate=null;
+    $('day-events').replaceChildren(); updateSpaceSelector(); render(); return;
+  }
+  try {
+    const rows = await loadEncryptedRecords(client,current);
+    const decoded = await Promise.all(rows.map(row => decodeRecord(current,row,cached.key)));
+    if (ticket !== generation || workspace?.id !== id || keys.get(id) !== cached) return;
+    events = decoded.filter(item => item.kind === 'event'); tasks = decoded.filter(item => item.kind === 'task');
+    $('sync-status').textContent = 'Encrypted · up to date'; render();
+  } catch (error) { if (ticket === generation) lockVault(false); throw error; }
 }
 function sampleData() {
   const now = new Date(), year = now.getFullYear(), m = now.getMonth();
@@ -141,9 +215,8 @@ function enterDemo() {
   user = { id: 'demo', user_metadata: { display_name: 'You' } };
   workspace = { id: 'demo', name: 'Our everyday', owner_id: 'demo' }; workspaces = [workspace];
   members = [{ user_id: 'demo', display_name: 'You' }, { user_id: 'alex', display_name: 'Alex' }, { user_id: 'sam', display_name: 'Sam' }];
-  let saved;
-  try { saved = JSON.parse(storage.get('together-demo-v1')); } catch { /* Use fresh sample data. */ }
-  const data = saved && Array.isArray(saved.events) && Array.isArray(saved.tasks) ? saved : sampleData();
+  keys.clear();
+  const data = sampleData();
   events = data.events; tasks = data.tasks;
   $('auth-view').hidden = true; $('app-view').hidden = false; $('demo-banner').hidden = false;
   $('user-name').textContent = 'You'; $('user-avatar').textContent = 'Y'; $('user-mode').textContent = 'Demo space';
@@ -151,8 +224,14 @@ function enterDemo() {
   $('sync-status').textContent = 'Demo'; $('new-workspace').hidden = true;
   render(); window.scrollTo(0, 0);
 }
-function saveDemo() { storage.set('together-demo-v1', JSON.stringify({ events, tasks })); render(); }
+function saveDemo() { render(); }
 function render() {
+  const locked = !demo && workspace && !keys.has(workspace.id);
+  $('vault-banner').hidden = !locked;
+  $('lock-space').hidden = demo || !workspace || locked;
+  $('calendar-section').hidden = Boolean(locked); $('tasks-section').hidden = Boolean(locked);
+  document.querySelector('.overview').hidden = Boolean(locked);
+  if (locked) $('sync-status').textContent = 'Locked';
   const today = new Date(), todayKey = dateKey(today);
   $('today-label').textContent = today.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).toUpperCase();
   $('month-label').textContent = month.toLocaleDateString('en-GB', { month: 'long' });
@@ -177,7 +256,8 @@ function render() {
   document.querySelectorAll('[data-filter]').forEach(button => { const active = button.dataset.filter === taskFilter; button.classList.toggle('active', active); button.setAttribute('aria-pressed', active); });
 }
 function openEditor(kind, id) {
-  if (!workspace) { $('workspace-dialog').showModal(); return; }
+  if (!workspace) { showCreateSpace(); return; }
+  if (!demo && !keys.has(workspace.id)) { showUnlock(); return; }
   const item = id ? (kind === 'event' ? events : tasks).find(item => item.id === id) : null;
   if (id && !item) { toast('This item is no longer available.'); return; }
   editing = { kind, id: item?.id || null, workspaceId: workspace.id };
@@ -207,9 +287,12 @@ async function persistItem(kind, id, values) {
     } else collection.push({ ...values, id: crypto.randomUUID(), workspace_id: workspace.id, created_at: new Date().toISOString(), ...(kind === 'task' ? { completed: false } : {}) });
     saveDemo(); return;
   }
-  const table = kind === 'event' ? 'events' : 'tasks';
-  const response = id ? await client.from(table).update(values).eq('id', id).eq('workspace_id', workspace.id).select('id').single() : await client.from(table).insert({ ...values, workspace_id: workspace.id, created_by: user.id }).select('id').single();
-  result(response); await refresh();
+  const cached = keys.get(workspace.id);
+  if (!cached || cached.epoch !== workspace.key_epoch) throw new Error('Unlock this space with its current key first.');
+  const previous = id ? collection.find(item => item.id === id) : null;
+  if (id && !previous) throw new Error('This item no longer exists. Refresh and retry.');
+  await writeEncryptedRecord(client,workspace,cached.key,user.id,kind,previous,values);
+  await refresh();
 }
 function confirmAction(title = 'Delete this item?', description = 'This removes it for everyone in this space.', action = 'Delete') {
   $('confirm-heading').textContent = title; $('confirm-dialog').querySelector('p').textContent = description;
@@ -223,13 +306,13 @@ function confirmAction(title = 'Delete this item?', description = 'This removes 
   });
 }
 async function showShare() {
-  if (!workspace) { $('workspace-dialog').showModal(); return; }
+  if (!workspace) { showCreateSpace(); return; }
   $('share-status').textContent = ''; $('invite-output').hidden = true;
   const owner = workspace.owner_id === user.id;
   $('share-owner-controls').hidden = !owner;
   if (!owner) $('share-status').textContent = 'The space owner can create invitation links.';
   if (demo) $('share-status').textContent = 'This is a local demo. Sign in to invite people to a real shared space.';
-  $('generate-invite').disabled = demo; $('revoke-invites').disabled = demo;
+  $('generate-invite').disabled = demo; $('revoke-invites').disabled = demo; $('rotate-key').disabled = demo || !keys.has(workspace.id);
   $('member-list').innerHTML = members.map(member => `<div class="member"><span class="avatar">${esc(initials(member.display_name))}</span><span>${esc(member.display_name)}</span>${member.user_id === workspace.owner_id ? '<small>Owner</small>' : owner && !demo ? `<button data-remove-member="${esc(member.user_id)}">Remove</button>` : '<small>Member</small>'}</div>`).join('');
   $('share-dialog').showModal();
 }
@@ -241,6 +324,7 @@ $('auth-form').onsubmit = (event) => {
   busy($('auth-submit'), async () => {
     if (!client) throw new Error('Shared login is not connected yet. You can explore the demo below.');
     const email = $('auth-email').value.trim(), password = $('auth-password').value;
+    $('auth-password').value = '';
     if (authMode === 'signup') {
       const name = $('auth-name').value.trim();
       if (!name) throw new Error('Please enter your name.');
@@ -278,11 +362,7 @@ document.addEventListener('click', event => {
   const eventButton = event.target.closest('[data-event]'); if (eventButton) openEditor('event', eventButton.dataset.event);
   const taskButton = event.target.closest('[data-task]'); if (taskButton) openEditor('task', taskButton.dataset.task);
   const removeButton = event.target.closest('[data-remove-member]');
-  if (removeButton) busy(removeButton, async () => {
-    if (!await confirmAction('Remove this member?', 'They will lose access to this space. You can invite them again later.', 'Remove')) return;
-    result(await client.rpc('remove_workspace_member', { target_workspace: workspace.id, target_user: removeButton.dataset.removeMember }));
-    await refresh(); $('share-dialog').close(); await showShare(); toast('Member removed.');
-  }, 'share-status');
+  if (removeButton) openRotation(removeButton.dataset.removeMember);
 });
 $('task-list').addEventListener('change', event => {
   const checkbox = event.target.closest('[data-toggle-task]'); if (!checkbox) return;
@@ -303,7 +383,12 @@ $('delete-item').onclick = () => busy($('delete-item'), async () => {
   if (editing.workspaceId !== workspace?.id) throw new Error('The active space changed. Close this editor and try again.');
   if (!await confirmAction()) return;
   if (demo) { if (editing.kind === 'event') events = events.filter(item => item.id !== editing.id); else tasks = tasks.filter(item => item.id !== editing.id); saveDemo(); }
-  else { result(await client.from(editing.kind === 'event' ? 'events' : 'tasks').delete().eq('id', editing.id).eq('workspace_id', workspace.id).select('id').single()); await refresh(); }
+  else {
+    const previous = (editing.kind === 'event' ? events : tasks).find(item => item.id === editing.id);
+    if (!previous || !keys.has(workspace.id)) throw new Error('Unlock and refresh this space before deleting.');
+    const response = await client.from('encrypted_records').delete().eq('id',editing.id).eq('workspace_id',workspace.id).eq('updated_at',previous.updated_at).select('id').maybeSingle();
+    result(response); if (!response.data) throw new Error('This item changed on another device. Refresh and retry.'); await refresh();
+  }
   $('editor-dialog').close(); toast('Item deleted.');
 }, 'editor-status');
 $('quick-task-form').onsubmit = event => {
@@ -316,22 +401,27 @@ $('quick-task-form').onsubmit = event => {
 $('workspace-select').onchange = () => busy($('workspace-select'), async () => {
   if (demo) return;
   generation++; workspace = workspaces.find(item => item.id === $('workspace-select').value) || null;
-  selectedDate = null; events = []; tasks = []; members = []; render(); await refresh();
+  selectedDate = null; events = []; tasks = []; members = []; render(); await refresh(); if (!keys.has(workspace?.id)) showUnlock();
 });
-$('new-workspace').onclick = () => { $('workspace-status').textContent = ''; $('workspace-dialog').showModal(); };
+$('new-workspace').onclick = showCreateSpace;
 $('workspace-form').onsubmit = event => {
   event.preventDefault();
   busy($('workspace-form').querySelector('[type=submit]'), async () => {
     if (!client || demo) throw new Error('Sign in to create a shared space.');
     const name = $('workspace-name').value.trim(); if (!name) throw new Error('Please name your space.');
-    const id = result(await client.rpc('create_workspace', { workspace_name: name }));
-    await loadWorkspaces(id); $('workspace-dialog').close(); $('workspace-form').reset(); toast('Your space is ready.');
+    if (!$('create-key-saved').checked) throw new Error('Save the recovery key before continuing.');
+    const revision = vaultRevision;
+    const key = await importRecoveryKey($('create-recovery-key').value);
+    const space = await createEncryptedWorkspace(client,name,key);
+    if (revision === vaultRevision) keys.set(space.id,{key,epoch:space.key_epoch});
+    $('create-recovery-key').value = ''; await loadWorkspaces(space.id);
+    $('workspace-dialog').close(); $('workspace-form').reset(); toast('Your encrypted space is ready.');
   }, 'workspace-status');
 };
 $('invite-button').onclick = showShare; $('sidebar-invite').onclick = showShare;
 $('generate-invite').onclick = () => busy($('generate-invite'), async () => {
   const token = result(await client.rpc('create_workspace_invite', { target_workspace: workspace.id }));
-  const url = new URL(baseUrl()); url.searchParams.set('invite', token);
+  const url = new URL(baseUrl()); url.hash = 'invite=' + token;
   $('invite-link').value = url.href; $('invite-output').hidden = false;
 }, 'share-status');
 $('copy-invite').onclick = () => busy($('copy-invite'), async () => {
@@ -344,9 +434,81 @@ $('revoke-invites').onclick = () => busy($('revoke-invites'), async () => {
 }, 'share-status');
 $('join-space').onclick = () => busy($('join-space'), async () => {
   const id = result(await client.rpc('join_workspace', { invite_token: storage.get('together-invite', true) || '' }));
-  storage.remove('together-invite', true); await loadWorkspaces(id); $('join-dialog').close(); toast('Welcome to your shared space.');
+  storage.remove('together-invite', true); $('join-dialog').close(); await loadWorkspaces(id); toast('Membership added. Unlock with the key shared privately by the owner.');
 }, 'join-status');
 
+async function copyKey(inputId) {
+  try { await navigator.clipboard.writeText($(inputId).value); toast('Key copied. Save it in your password manager, then clear your clipboard.'); }
+  catch { $(inputId).type = 'text'; $(inputId).focus(); $(inputId).select(); toast('Copy and save the key, then hide it by closing this dialog.'); }
+}
+function openRotation(removeUser = null) {
+  if (!workspace || !keys.has(workspace.id)) { showUnlock(); return; }
+  pendingRemoval = removeUser;
+  $('share-dialog').close(); $('rotate-form').reset(); $('rotate-status').textContent = '';
+  $('rotate-heading').textContent = removeUser ? 'Remove member & change key' : 'Change encryption key';
+  $('rotate-recovery-key').value = generateRecoveryKey(); $('rotate-dialog').showModal();
+}
+$('lock-space').onclick = () => lockVault();
+$('unlock-space').onclick = showUnlock;
+$('unlock-form').onsubmit = event => {
+  event.preventDefault();
+  busy($('unlock-form').querySelector('[type=submit]'),async () => {
+    const id=workspace?.id, revision=vaultRevision; if(!id) throw new Error('Choose a space first.');
+    const key=await importRecoveryKey($('unlock-key').value); $('unlock-key').value='';
+    const current=result(await client.from('workspaces').select('*').eq('id',id).single());
+    const name=await unlockName(current,key);
+    if(workspace?.id !== id || !user || revision !== vaultRevision) return;
+    keys.set(id,{key,epoch:current.key_epoch}); workspace={...current,name};
+    workspaces=workspaces.map(item=>item.id===id?workspace:item); updateSpaceSelector();
+    lastActivity=Date.now(); await refresh(); $('unlock-dialog').close(); toast('Space unlocked.');
+  },'unlock-status');
+};
+$('copy-create-key').onclick=()=>copyKey('create-recovery-key');
+$('copy-rotate-key').onclick=()=>copyKey('rotate-recovery-key');
+$('rotate-key').onclick=()=>openRotation();
+$('rotate-form').onsubmit=event=>{
+  event.preventDefault();
+  busy($('rotate-form').querySelector('[type=submit]'),async()=>{
+    if(!$('rotate-key-saved').checked) throw new Error('Save the new key before continuing.');
+    const cached=keys.get(workspace?.id); if(!cached) throw new Error('Unlock this space first.');
+    const revision=vaultRevision;
+    const key=await importRecoveryKey($('rotate-recovery-key').value);
+    const updated=await rotateEncryptedWorkspace(client,workspace,cached.key,key,pendingRemoval);
+    if (revision === vaultRevision) keys.set(updated.id,{key,epoch:updated.key_epoch});
+    workspace=updated;
+    $('rotate-recovery-key').value=''; $('rotate-dialog').close(); await loadWorkspaces(updated.id);
+    toast('Key changed. Share the new key privately with remaining members.');
+  },'rotate-status');
+};
+['workspace-dialog','rotate-dialog','unlock-dialog'].forEach(id=>{
+  $(id).addEventListener('close',()=>{
+    const input = id==='workspace-dialog'?'create-recovery-key':id==='rotate-dialog'?'rotate-recovery-key':'unlock-key';
+    $(input).value=''; $(input).type='password';
+  });
+});
+$('mfa-dialog').addEventListener('cancel',event=>event.preventDefault());
+$('mfa-enroll').onclick=()=>busy($('mfa-enroll'),async()=>{
+  const data=result(await client.auth.mfa.enroll({factorType:'totp',issuer:'Together Calendar',friendlyName:'Together '+Date.now()}));
+  mfaFactor=data.id; const svg=data.totp.qr_code;
+  if(typeof svg!=='string' || (!svg.startsWith('<svg') && !svg.startsWith('data:image/svg+xml'))) throw new Error('Authenticator setup returned an invalid QR code.');
+  $('mfa-qr').src=svg.startsWith('<svg')?'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg):svg;
+  $('mfa-secret').value=data.totp.secret; $('mfa-setup').hidden=false; $('mfa-enroll').hidden=true; $('mfa-verify').disabled=false;
+},'mfa-status');
+$('mfa-form').onsubmit=event=>{
+  event.preventDefault();
+  busy($('mfa-verify'),async()=>{
+    if(!mfaFactor) throw new Error('Set up an authenticator first.');
+    const code=$('mfa-code').value; $('mfa-code').value='';
+    result(await client.auth.mfa.challengeAndVerify({factorId:mfaFactor,code}));
+    const data=result(await client.auth.getSession()); await enterSession(data.session);
+  },'mfa-status');
+};
+$('mfa-signout').onclick=()=>busy($('mfa-signout'),async()=>{result(await client.auth.signOut());authView();});
+['pointerdown','keydown'].forEach(event=>document.addEventListener(event,()=>{lastActivity=Date.now();},{passive:true}));
+function checkIdle(){if(!demo && keys.size && Date.now()-lastActivity>5*60*1000) lockVault();}
+setInterval(checkIdle,15000);
+document.addEventListener('visibilitychange',checkIdle);
+window.addEventListener('pagehide',()=>{if(!demo)lockVault(false);});
 async function boot() {
   $('setup-notice').hidden = Boolean(client);
   if (!client) return;
@@ -358,5 +520,9 @@ async function boot() {
     if (event === 'SIGNED_OUT') setTimeout(authView, 0);
     else if (event === 'SIGNED_IN' && !recovery && !demo) setTimeout(() => { enterSession(session).catch(error => toast(errorMessage(error))); }, 0);
   });
+}
+if (window.self !== window.top) {
+  document.body.replaceChildren();
+  throw new Error('Open Together directly in its own browser tab.');
 }
 boot().catch(error => { $('auth-status').textContent = errorMessage(error); });
