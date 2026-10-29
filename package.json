@@ -1,0 +1,13 @@
+{
+  "name": "together-calendar",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A shared calendar and to-do list for the everyday.",
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "test": "node --test tests/calendar.test.mjs",
+    "test:database": "node tests/database.mjs",
+    "check": "node --check site/app.js && node --check site/calendar.js"
+  }
+}

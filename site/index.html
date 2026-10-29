@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A little more in sync. A shared calendar and to-do list for your everyday plans.">
+  <meta name="theme-color" content="#3c503b">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://*.supabase.co wss://*.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <title>Together — make room for life</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./config.js" defer></script>
+  <script src="./vendor/supabase.js" defer></script>
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <section id="auth-view" class="auth-layout">
+    <div class="auth-story">
+      <a class="brand" href="./"><img src="./favicon.svg" alt="" width="36" height="36">together<span>®</span></a>
+      <div class="story-content">
+        <span class="eyebrow">LESS COORDINATING. MORE LIVING.</span>
+        <h1>Good days<br>start <em>together.</em></h1>
+        <p>One place for your plans, your people,<br>and the little things in between.</p>
+        <div class="paper-stack" aria-hidden="true">
+          <div class="paper-card"><div class="paper-top"><span>OUR WEEK</span><span>↗</span></div><div class="paper-days"><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span></div><div class="paper-numbers"><span>12</span><span class="circled">13</span><span>14</span><span>15</span><span>16</span></div><div class="paper-event">☀ &nbsp; A little time for us <span>16:00</span></div><div class="paper-task">✓ &nbsp; Make a plan. Make it happen.</div></div>
+          <div class="floating-note">Life looks better<br>on the same page.<span>✳</span></div>
+        </div>
+      </div>
+      <div class="story-footer">A shared calendar. A lighter mental load.</div>
+    </div>
+    <div class="auth-panel">
+      <div class="auth-box">
+        <div class="small-mark">✳</div>
+        <h2 id="auth-heading">Welcome to your everyday.</h2>
+        <p id="auth-description">Sign in and pick up where life left off.</p>
+        <div id="setup-notice" class="notice" hidden>Shared login is being connected. In the meantime, explore the demo with sample plans.</div>
+        <form id="auth-form">
+          <label id="name-label" hidden>Your name<input id="auth-name" name="name" autocomplete="name" maxlength="80"></label>
+          <label>Email address<input id="auth-email" name="email" type="email" placeholder="you@example.com" autocomplete="email" required></label>
+          <label id="password-label">Password<input id="auth-password" name="password" type="password" placeholder="Your password" autocomplete="current-password" minlength="10" required></label>
+          <button id="auth-submit" class="primary wide" type="submit">Sign in <span>↗</span></button>
+          <p id="auth-status" class="form-status" role="status"></p>
+        </form>
+        <div class="auth-links"><button id="auth-toggle" class="text-button">Create an account</button><button id="forgot-password" class="text-button">Forgot password?</button></div>
+        <div class="divider"><span>take a look around</span></div>
+        <button id="demo-button" class="secondary wide">Explore the demo <span>→</span></button>
+        <p class="auth-footnote">Your plans are only shared with the people<br>you invite into your space.</p>
+      </div>
+    </div>
+  </section>
+
+  <div id="app-view" class="app-layout" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="./"><img src="./favicon.svg" alt="" width="34" height="34">together<span>®</span></a>
+      <div class="workspace-picker"><span class="workspace-symbol">⌂</span><div><label for="workspace-select">YOUR SPACE</label><select id="workspace-select" aria-label="Current shared space"></select></div></div>
+      <nav aria-label="Main navigation"><a class="nav-link active" href="#calendar-section"><span data-icon="calendar"></span> Calendar <span class="nav-dot"></span></a><a class="nav-link" href="#tasks-section"><span data-icon="check-square"></span> To-do list <span id="sidebar-task-count" class="count">0</span></a></nav>
+      <button id="new-workspace" class="text-button new-space"><span>＋</span> Create a space</button>
+      <div class="sidebar-bottom"><div class="sidebar-note"><span class="note-star">✳</span><h3>A little more in sync.</h3><p>Big plans, small errands.<br>Better when shared.</p><button id="sidebar-invite" class="text-button">Bring your people <span>↗</span></button></div><button id="account-button" class="account-button"><span id="user-avatar" class="avatar">Y</span><span><strong id="user-name">You</strong><small id="user-mode">Your shared space</small></span><span data-icon="log-out"></span></button></div>
+    </aside>
+    <main id="main" class="main-content">
+      <div id="demo-banner" class="demo-banner" hidden><span><strong>You’re exploring the demo.</strong> Changes stay in this browser.</span><button id="leave-demo" class="text-button">Back to sign in <span>↗</span></button></div>
+      <header class="page-header"><div><div class="eyebrow" id="today-label">YOUR EVERYDAY, TOGETHER</div><h1>Room for everything<span>.</span></h1><p>A plan for the busy days. Space for the good ones.</p></div><button id="invite-button" class="secondary"><span data-icon="users"></span> Invite people</button></header>
+      <div class="overview"><div class="overview-intro"><span class="sun-symbol">☼</span><div><strong>Let’s make a little room.</strong><span id="overview-copy">Here’s what’s coming up in your shared space.</span></div></div><div class="overview-stat"><strong id="month-event-count">0</strong><span>plans this month</span></div><div class="overview-stat"><strong id="open-task-count">0</strong><span>things to do</span></div></div>
+      <section id="calendar-section" class="calendar-section" aria-label="Shared calendar">
+        <div class="section-heading"><div class="section-title"><h2>Your calendar</h2><span class="live-status" id="sync-status">Ready</span></div><button class="primary" id="add-event"><span>＋</span> New event</button></div>
+        <div class="calendar-card"><div class="calendar-toolbar"><div class="month-heading"><h3 id="month-label"></h3><span id="year-label"></span></div><div class="calendar-navigation"><button id="today-button" class="small-button">Today</button><button id="previous-month" class="icon-button" aria-label="Previous month"><span data-icon="chevron-left"></span></button><button id="next-month" class="icon-button" aria-label="Next month"><span data-icon="chevron-right"></span></button></div></div><div class="weekdays" aria-hidden="true"><span>MON</span><span>TUE</span><span>WED</span><span>THU</span><span>FRI</span><span>SAT</span><span>SUN</span></div><div id="calendar-grid" class="calendar-grid"></div><div class="calendar-footer"><div class="legend"><span><i class="sage"></i>Everyday</span><span><i class="lavender"></i>Work</span><span><i class="peach"></i>Personal</span></div><span>Click a day to see your plans <span>↗</span></span></div></div>
+        <div id="selected-day" class="selected-day" hidden><div class="section-heading"><h3 id="selected-day-label"></h3><button id="day-add-event" class="text-button">＋ Add a plan</button></div><div id="day-events"></div></div>
+      </section>
+      <section id="tasks-section" class="tasks-section" aria-label="Shared to-do list">
+        <div class="section-heading"><div><div class="section-title"><h2>The little things</h2><span id="tasks-count" class="count">0</span></div><p>A shared list. A little less on your mind.</p></div><button id="add-task" class="secondary"><span>＋</span> Add a task</button></div>
+        <div class="tasks-card"><div class="tasks-toolbar"><div class="tabs" role="group" aria-label="Filter tasks"><button class="tab active" data-filter="open" aria-pressed="true">To do</button><button class="tab" data-filter="upcoming" aria-pressed="false">Upcoming</button><button class="tab" data-filter="done" aria-pressed="false">Completed</button></div><span class="task-progress" id="task-progress"></span></div><div id="task-list" class="task-list"></div><form id="quick-task-form" class="quick-task"><span>＋</span><input id="quick-task-title" aria-label="New task title" placeholder="Add something to your list…" maxlength="160" required><button class="text-button" type="submit">Add <span>↵</span></button></form></div>
+      </section>
+      <footer class="page-footer"><span>Made for the life you share.</span><span>One day at a time. <span>✳</span></span></footer>
+    </main>
+  </div>
+
+  <dialog id="editor-dialog" aria-labelledby="editor-heading"><form id="editor-form"><div class="dialog-heading"><div><span class="eyebrow" id="editor-eyebrow">MAKE A LITTLE PLAN</span><h2 id="editor-heading">New event</h2></div><button type="button" class="icon-button" data-close="editor-dialog" aria-label="Close dialog">×</button></div><label>Title<input id="item-title" maxlength="160" required placeholder="What’s the plan?"></label><div class="form-row"><label id="date-label">Date<input id="item-date" type="date"></label><label id="time-label">Time <span class="optional">(optional)</span><input id="item-time" type="time"></label></div><div class="form-row"><label>Category<select id="item-category"><option value="sage">Everyday</option><option value="lavender">Work</option><option value="peach">Personal</option></select></label><label id="assignee-label" hidden>Assigned to <span class="optional">(optional)</span><input id="item-assignee" maxlength="80" placeholder="Anyone"></label></div><label>Notes <span class="optional">(optional)</span><textarea id="item-notes" rows="3" maxlength="2000" placeholder="A few useful details…"></textarea></label><p id="editor-status" role="status" class="form-status"></p><div class="dialog-actions"><button type="button" id="delete-item" class="danger-button" hidden>Delete</button><button type="button" class="secondary" data-close="editor-dialog">Cancel</button><button type="submit" id="save-item" class="primary">Save event</button></div></form></dialog>
+  <dialog id="workspace-dialog" aria-labelledby="workspace-heading"><form id="workspace-form"><div class="dialog-heading"><h2 id="workspace-heading">Make a shared space</h2><button type="button" class="icon-button" data-close="workspace-dialog" aria-label="Close dialog">×</button></div><p>A home for your people and your plans.</p><label>Space name<input id="workspace-name" maxlength="80" required placeholder="Our everyday"></label><p id="workspace-status" role="status" class="form-status"></p><button class="primary wide" type="submit">Create space <span>↗</span></button></form></dialog>
+  <dialog id="share-dialog" aria-labelledby="share-heading"><div class="dialog-heading"><h2 id="share-heading">Better with your people.</h2><button class="icon-button" data-close="share-dialog" aria-label="Close dialog">×</button></div><p>Invite someone to view and edit this space’s calendar and to-do list.</p><div id="share-owner-controls"><button id="generate-invite" class="primary wide">Create invite link <span>↗</span></button><div id="invite-output" hidden><label>Invite link<input id="invite-link" readonly></label><button id="copy-invite" class="secondary wide">Copy link</button><p class="muted">Valid for 7 days. Anyone with this link can join after signing in.</p></div><button id="revoke-invites" class="text-button danger-text">Revoke all invite links</button></div><p id="share-status" class="form-status" role="status"></p><h3 class="members-heading">In this space</h3><div id="member-list"></div></dialog>
+  <dialog id="join-dialog" aria-labelledby="join-heading"><div class="dialog-heading"><h2 id="join-heading">You’re invited.</h2><button class="icon-button" data-close="join-dialog" aria-label="Close dialog">×</button></div><p>Join this shared space to see its calendar and help with the to-do list. Your display name will be visible to its members.</p><p id="join-status" class="form-status" role="status"></p><button id="join-space" class="primary wide">Join shared space <span>↗</span></button></dialog>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-heading"><h2 id="confirm-heading">Delete this item?</h2><p>This removes it for everyone in this space.</p><div class="dialog-actions"><button class="secondary" id="cancel-delete">Keep it</button><button class="danger-button" id="confirm-delete">Delete</button></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <noscript><p>This calendar needs JavaScript to work. Please enable it in your browser.</p></noscript>
+</body>
+</html>
