@@ -1,5 +1,6 @@
 import { generateRecoveryKey, importRecoveryKey } from './crypto.js';
 import { createDeviceKeyStore } from './device-keys.js';
+import { verifiedAuthenticators, authenticatorLabel, createAuthenticatorEnrollment } from './authenticators.js';
 import { unlockName, decodeRecord, loadEncryptedRecords, createEncryptedWorkspace, writeEncryptedRecord, rotateEncryptedWorkspace } from './encrypted-store.js';
 import { dateKey, parseDate, monthCells, shiftMonth, eventsOn, visibleTasks, cleanTitle } from './calendar.js';
 
@@ -33,6 +34,7 @@ const deviceScope = JSON.stringify([config.supabaseUrl || 'unconfigured', new UR
 const deviceKeys = createDeviceKeyStore(deviceScope);
 const deviceChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('together-device-keys:' + deviceScope) : null;
 let pendingDeviceUnlock = null;
+let pendingAuthenticatorSetup = null, mfaChoices = [];
 let sessionReady = false, sessionGeneration = 0, vaultRevision = 0, mfaFactor = null, pendingRemoval = null, lastActivity = Date.now();
 let recovery = new URLSearchParams(location.hash.slice(1)).get('type') === 'recovery';
 const initialUrl = new URL(location.href);
@@ -93,6 +95,9 @@ function setAuthMode(mode) {
   $('auth-status').textContent = '';
 }
 function wipePlaintext() {
+  const addingAuthenticator = Boolean(pendingAuthenticatorSetup);
+  clearAuthenticatorSetup();
+  if (addingAuthenticator) $('mfa-dialog').close();
   pendingDeviceUnlock = null;
   generation++; vaultRevision++; keys.clear(); events = []; tasks = []; selectedDate = null; editing = null;
   workspaces.forEach(space => { delete space.name; }); if (workspace) delete workspace.name;
@@ -118,14 +123,24 @@ function authView() {
   setAuthMode('signin');
 }
 async function prepareMfa() {
-  const expectedUser = user?.id, attempt = sessionGeneration, unlock = pendingDeviceUnlock;
+  const expectedUser = user?.id, attempt = sessionGeneration, unlock = pendingDeviceUnlock, setup = pendingAuthenticatorSetup;
   const factors = result(await client.auth.mfa.listFactors());
-  if (user?.id !== expectedUser || attempt !== sessionGeneration || (unlock && pendingDeviceUnlock !== unlock)) return;
-  mfaFactor = factors.totp.find(factor => factor.status === 'verified')?.id || null;
+  if (user?.id !== expectedUser || attempt !== sessionGeneration || (unlock && pendingDeviceUnlock !== unlock) || setup !== pendingAuthenticatorSetup) return;
+  mfaChoices = verifiedAuthenticators(factors);
+  mfaFactor = mfaChoices[0]?.id || null;
+  $('mfa-phone').replaceChildren(...mfaChoices.map((factor,index) => new Option(authenticatorLabel(factor,index),factor.id)));
+  $('mfa-phone-label').hidden = !mfaFactor;
   $('mfa-enroll').hidden = Boolean(mfaFactor); $('mfa-setup').hidden = true;
   $('mfa-secret').value = ''; $('mfa-qr').removeAttribute('src'); $('mfa-code').value = '';
   $('mfa-verify').disabled = !mfaFactor; $('mfa-status').textContent = '';
   $('mfa-description').textContent = mfaFactor ? 'Enter the six-digit code from your authenticator. The database requires this verification before it allows any calendar access.' : 'Set up an authenticator app before creating or opening a calendar. Keep a private backup of its setup code.';
+  $('mfa-heading').textContent = setup ? 'Verify your existing phone' : 'Verify it’s you';
+  $('mfa-cancel').hidden = !setup;
+  if (setup) {
+    $('mfa-enroll').hidden = true;
+    $('mfa-description').textContent = 'Choose a phone already registered to this account and enter a fresh code before adding another authenticator.';
+    if (!mfaFactor) throw new Error('No existing authenticator is available. Sign in again.');
+  }
   if (!$('mfa-dialog').open) $('mfa-dialog').showModal();
 }
 async function enterSession(session) {
@@ -145,6 +160,7 @@ async function enterSession(session) {
   $('user-name').textContent = displayName(); $('user-avatar').textContent = initials(displayName());
   $('user-mode').textContent = 'Verified · sign out'; $('account-button').ariaLabel = 'Sign out';
   $('new-workspace').hidden = false;
+  $('add-authenticator').hidden = false;
   await loadWorkspaces(undefined, true);
   if (attempt !== sessionGeneration) return;
   clearInterval(poll);
@@ -290,6 +306,7 @@ function render() {
   $('vault-banner').hidden = !locked;
   $('lock-space').hidden = demo || !workspace || locked;
   $('device-key').hidden = demo || !workspace;
+  $('add-authenticator').hidden = demo || !sessionReady;
   $('vault-description').textContent = remembered.get(workspace?.id) === workspace?.key_epoch && workspace
     ? 'A key is remembered in this browser. Verify your authenticator to unlock your plans.'
     : 'Unlock with the recovery key from your password manager. You can choose to remember it in this browser.';
@@ -570,20 +587,43 @@ $('rotate-form').onsubmit=event=>{
   });
 });
 $('mfa-dialog').addEventListener('cancel',event=>event.preventDefault());
+$('mfa-dialog').addEventListener('close',()=>{
+  $('mfa-secret').value=''; $('mfa-code').value=''; $('mfa-qr').removeAttribute('src');
+});
+$('mfa-phone').onchange=()=>{
+  mfaFactor=mfaChoices.find(factor=>factor.id===$('mfa-phone').value)?.id || null;
+  $('mfa-code').value=''; $('mfa-status').textContent=''; $('mfa-verify').disabled=!mfaFactor;
+};
 $('mfa-enroll').onclick=()=>busy($('mfa-enroll'),async()=>{
+  const expectedUser=user?.id, attempt=sessionGeneration;
   const data=result(await client.auth.mfa.enroll({factorType:'totp',issuer:'Together Calendar',friendlyName:'Together '+Date.now()}));
-  mfaFactor=data.id; const svg=data.totp.qr_code;
-  if(typeof svg!=='string' || (!svg.startsWith('<svg') && !svg.startsWith('data:image/svg+xml'))) throw new Error('Authenticator setup returned an invalid QR code.');
-  $('mfa-qr').src=svg.startsWith('<svg')?'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg):svg;
+  if (user?.id!==expectedUser || attempt!==sessionGeneration || !$('mfa-dialog').open) return;
+  mfaFactor=data.id;
+  $('mfa-qr').src=authenticatorQr(data.totp.qr_code);
   $('mfa-secret').value=data.totp.secret; $('mfa-setup').hidden=false; $('mfa-enroll').hidden=true; $('mfa-verify').disabled=false;
 },'mfa-status');
 $('mfa-form').onsubmit=event=>{
   event.preventDefault();
   busy($('mfa-verify'),async()=>{
     if(!mfaFactor) throw new Error('Set up an authenticator first.');
-    const pending = pendingDeviceUnlock;
+    const pending = pendingDeviceUnlock, setup=pendingAuthenticatorSetup;
+    const expectedUser=user?.id, attempt=sessionGeneration, factorId=mfaFactor;
     const code=$('mfa-code').value; $('mfa-code').value='';
-    result(await client.auth.mfa.challengeAndVerify({factorId:mfaFactor,code}));
+    $('mfa-phone').disabled=true;
+    try {
+      if (setup) await setup.flow.authorize(factorId,code);
+      else result(await client.auth.mfa.challengeAndVerify({factorId,code}));
+    } finally { $('mfa-phone').disabled=false; }
+    if (user?.id!==expectedUser || attempt!==sessionGeneration || !$('mfa-dialog').open) return;
+    if (setup) {
+      if (pendingAuthenticatorSetup!==setup) return;
+      $('mfa-dialog').close();
+      $('authenticator-form').reset(); $('authenticator-status').textContent='';
+      $('authenticator-name').disabled=false; $('authenticator-generate').hidden=false;
+      $('authenticator-code').disabled=true;
+      $('authenticator-setup').hidden=true; $('authenticator-confirm').hidden=true;
+      $('authenticator-dialog').showModal(); return;
+    }
     if (pending) {
       if (pending.revision !== vaultRevision || pending.userId !== user?.id || workspace?.id !== pending.id) return;
       const current=result(await client.from('workspaces').select('*').eq('id',pending.id).maybeSingle());
@@ -603,6 +643,56 @@ $('mfa-form').onsubmit=event=>{
   },'mfa-status');
 };
 $('mfa-signout').onclick=()=>busy($('mfa-signout'),async()=>{result(await client.auth.signOut());authView();});
+function authenticatorQr(svg) {
+  if(typeof svg!=='string' || (!svg.startsWith('<svg') && !svg.startsWith('data:image/svg+xml'))) throw new Error('Authenticator setup returned an invalid QR code.');
+  return svg.startsWith('<svg')?'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg):svg;
+}
+function clearAuthenticatorSetup() {
+  const setup=pendingAuthenticatorSetup; pendingAuthenticatorSetup=null;
+  $('authenticator-secret').value=''; $('authenticator-code').value=''; $('authenticator-qr').removeAttribute('src');
+  if (setup) setup.flow.cancel().catch(()=>toast('The unfinished authenticator could not be removed. Existing verified phones still work; try setup again with a different phone name.'));
+}
+$('add-authenticator').onclick=()=>busy($('add-authenticator'),async()=>{
+  if (!sessionReady || !user || demo) return;
+  clearAuthenticatorSetup();
+  const setup={flow:createAuthenticatorEnrollment(client.auth.mfa)};
+  pendingAuthenticatorSetup=setup;
+  try { await prepareMfa(); } catch(error) { if(pendingAuthenticatorSetup===setup)clearAuthenticatorSetup(); throw error; }
+});
+$('mfa-cancel').onclick=()=>{clearAuthenticatorSetup();$('mfa-dialog').close();};
+$('authenticator-dialog').addEventListener('close',clearAuthenticatorSetup);
+$('authenticator-dialog').addEventListener('cancel',event=>{
+  if ($('authenticator-generate').disabled || $('authenticator-confirm').disabled) event.preventDefault();
+});
+$('authenticator-generate').onclick=()=>busy($('authenticator-generate'),async()=>{
+  if (!$('authenticator-name').reportValidity()) return;
+  const setup=pendingAuthenticatorSetup; if(!setup)return;
+  $('authenticator-cancel').disabled=true;
+  try {
+    const data=await setup.flow.enroll($('authenticator-name').value);
+    if (!data || setup!==pendingAuthenticatorSetup || !$('authenticator-dialog').open) return;
+    $('authenticator-qr').src=authenticatorQr(data.totp.qr_code);
+    $('authenticator-secret').value=data.totp.secret;
+    $('authenticator-name').disabled=true; $('authenticator-generate').hidden=true;
+    $('authenticator-setup').hidden=false; $('authenticator-confirm').hidden=false;
+    $('authenticator-code').disabled=false;
+    $('authenticator-code').focus();
+  } finally { $('authenticator-cancel').disabled=false; }
+},'authenticator-status');
+$('authenticator-form').onsubmit=event=>{
+  event.preventDefault();
+  if ($('authenticator-setup').hidden) { $('authenticator-generate').click(); return; }
+  busy($('authenticator-confirm'),async()=>{
+    const setup=pendingAuthenticatorSetup; if(!setup)return;
+    const code=$('authenticator-code').value; $('authenticator-code').value='';
+    $('authenticator-cancel').disabled=true;
+    try {
+      if (!await setup.flow.verify(code) || setup!==pendingAuthenticatorSetup) return;
+      $('authenticator-dialog').close();
+      toast('Authenticator added. Either phone can now verify this account. Other devices may need to sign in again.');
+    } finally { $('authenticator-cancel').disabled=false; }
+  },'authenticator-status');
+};
 function showDeviceKey() {
   if (!workspace || demo) return;
   const saved=remembered.get(workspace.id)===workspace.key_epoch;

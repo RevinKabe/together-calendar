@@ -2,6 +2,9 @@
 window.TOGETHER_CONFIG={supabaseUrl:'https://local-fixture.supabase.co',supabasePublishableKey:'sb_publishable_test_only'};
 const testUser={id:'00000000-0000-4000-8000-000000000001',email:'test@example.invalid',user_metadata:{display_name:'Test user'}};
 let assurance='aal1', listener=()=>{}, sequence=0;
+let factors=JSON.parse(localStorage.getItem('together-test-factors')||'null')||[{id:'test-factor',status:'verified',friendly_name:'Together 123456'}];
+function readFactors(){factors=JSON.parse(localStorage.getItem('together-test-factors')||'null')||factors;}
+function saveFactors(){localStorage.setItem('together-test-factors',JSON.stringify(factors));}
 let data=JSON.parse(localStorage.getItem('together-test-ciphertext-v2')||sessionStorage.getItem('together-test-ciphertext-v2')||'null')||{workspaces:[],workspace_members:[],encrypted_records:[]};
 function persistFixture(){localStorage.setItem('together-test-ciphertext-v2',JSON.stringify(data));}
 function syncFixture(){data=JSON.parse(localStorage.getItem('together-test-ciphertext-v2'))||data;}
@@ -61,8 +64,20 @@ window.supabase={createClient(url,key,options){
       async signOut(){listener('SIGNED_OUT',null);return {error:null};},
       mfa:{
         async getAuthenticatorAssuranceLevel(){return {data:{currentLevel:assurance},error:null};},
-        async listFactors(){return {data:{totp:[{id:'test-factor',status:'verified'}]},error:null};},
-        async challengeAndVerify({code}){if(code!=='123456')return {error:new Error('Invalid test code')};assurance='aal2';return {data:{},error:null};}
+        async listFactors(){readFactors();return {data:{totp:structuredClone(factors.filter(f=>f.status==='verified')),all:structuredClone(factors)},error:null};},
+        async enroll({friendlyName}){
+          readFactors();
+          if(assurance!=='aal2')return {error:new Error('Verify existing phone first')};
+          if(factors.some(f=>f.friendly_name===friendlyName))return {error:new Error('Use a different phone name')};
+          const id=crypto.randomUUID();factors.push({id,status:'unverified',friendly_name:friendlyName});saveFactors();
+          return {data:{id,totp:{secret:'TESTONLYNOTAREALSECRET',qr_code:'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 220"><rect width="220" height="220" fill="white"/><text x="15" y="105" fill="black">TEST QR ONLY</text><text x="15" y="130" fill="black">Test code: 654321</text></svg>'}},error:null};
+        },
+        async unenroll({factorId}){readFactors();const factor=factors.find(f=>f.id===factorId);if(factor?.status==='verified')throw new Error('Never delete a verified test factor');factors=factors.filter(f=>f.id!==factorId);saveFactors();return {data:{},error:null};},
+        async challengeAndVerify({factorId,code}){
+          readFactors();const factor=factors.find(f=>f.id===factorId);
+          if(!factor || code!==(factorId==='test-factor'?'123456':'654321'))return {error:new Error('Invalid test code for the selected phone')};
+          factor.status='verified';saveFactors();assurance='aal2';return {data:{},error:null};
+        }
       }
     }
   };

@@ -21,7 +21,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: node --check site/app.js && node --check site/crypto.js && node --check site/encrypted-store.js && node --check site/device-keys.js && node --test tests/*.test.mjs
+      - run: node --check site/app.js && node --check site/crypto.js && node --check site/encrypted-store.js && node --check site/device-keys.js && node --check site/authenticators.js && node --test tests/*.test.mjs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

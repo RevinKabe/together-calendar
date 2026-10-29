@@ -15,7 +15,7 @@ The built-in email sender remains sufficient for this account, whose email belon
 ## Start using it
 
 1. On each device, sign in with the existing shared app email and password. This is separate from the Supabase dashboard account.
-2. Enter a valid six-digit code from the authenticator enrolled for this account. Both people need access to valid codes; keep the authenticator setup backup private.
+2. Choose your phone in **Phone / authenticator** and enter its six-digit code. Keep each authenticator setup backup private.
 3. Unlock the existing space using its recovery key. Optionally check **Remember the key on this device** on a trusted browser. After that, sign-in and authenticator verification unlock the space without entering the key again. **Keep that key in your password manager.** The key never goes to Supabase. A password reset cannot recover a lost encryption key.
 4. Add events and tasks. All content is encrypted before it leaves the browser. The shared account sees the same spaces on both devices; an invitation is unnecessary.
 
@@ -24,6 +24,10 @@ Share the app credentials and recovery key privately through a trusted encrypted
 If switching to separate accounts later, first configure email delivery, then deliberately enable backend signups and set `allowSignups: true` in `site/config.js`. Invite the second account through **Invite people**, sharing the recovery key separately. Close backend signups and set the frontend flag back to false after registration. The frontend flag controls only the UI; Supabase enforces the actual signup policy.
 
 Use **Lock** before leaving a device. The app also locks after five minutes without keyboard/pointer activity and on page exit. Login sessions remain in tab memory, so reloading requires sign-in and authenticator verification again. With a remembered key, unlocking after Lock requires a fresh authenticator code; without one, it requires the recovery key.
+
+To register another phone, sign in with your existing authenticator, choose **Add another authenticator**, and verify a fresh code from an existing phone. Name the new phone, generate its QR code, and scan it privately in Microsoft Authenticator using **＋ → Other account**. Enter the new phone's code to finish. Both phones then appear at login and when unlocking a remembered key. The original authenticator, calendar recovery key and encrypted records are unchanged. Supabase may require other devices to sign in again after enrollment. Phone labels are account metadata visible to Supabase; use a simple label without private details.
+
+Canceling setup clears its QR/secret from the page and attempts to remove only the unverified factor created by that setup. It never removes existing or successfully verified factors. If the browser closes or the network fails before cleanup, an unused unverified factor may remain; retry with a different phone name or ask the project owner to review unused factors. Never remove the working authenticator to add another phone. The app does not provide a verified-factor deletion control.
 
 If your space is already unlocked, choose **Device key → Remember the key on this device**. The setting starts off and applies separately to each browser/profile and space. It stores a non-extractable Web Crypto key in IndexedDB, scoped to this app, account and encryption-key version. It does not save the recovery-key text or calendar content. Use **Device key → Forget this key and lock** to remove a saved copy. The sign-in page also has **Forget saved keys on this device** to remove all saved keys for this app. Signing out retains remembered keys; other tabs are notified when a saved key is forgotten.
 
@@ -59,6 +63,7 @@ node scripts/serve.mjs
 node --check site/app.js
 node --check site/crypto.js
 node --check site/encrypted-store.js
+node --check site/authenticators.js
 node --test tests/*.test.mjs
 ```
 
@@ -76,7 +81,7 @@ Tests cover MFA enforcement, anonymous denial, member isolation, encrypted round
 node scripts/serve-fixture.mjs
 ```
 
-Open http://127.0.0.1:4180. The fixture is outside `site/` and is never deployed. Read-only live anonymous-policy checks are available with `node scripts/check-hosted-access.mjs` using only the public client key.
+Open http://127.0.0.1:4180. The fixture is outside `site/` and is never deployed. Its original phone uses `123456`; newly enrolled fictional phones use `654321`, and only verified phones are offered at login. Enrollment tests cover fresh verification, wrong/selected-phone codes, cancellation, pending requests, lost responses and preservation of existing factors. Browser checks cover adding/canceling a phone, both login choices and remembered-key unlocking without exposing task content to the mock backend. Read-only live anonymous-policy checks are available with `node scripts/check-hosted-access.mjs` using only the public client key.
 
 Open http://127.0.0.1:4180/__device-tests.html for 22 checks against native IndexedDB and Web Crypto: persistence/non-extractability, account/app/space separation, stale-version cleanup, forget ordering, malformed keys and unavailable storage. The app fixture retains fictional ciphertext in local storage to simulate a backend across reloads and tabs; it resets authenticator assurance on every reload and never calls Supabase.
 
