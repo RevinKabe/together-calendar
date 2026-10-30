@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="A little more in sync. A shared calendar and to-do list for your everyday plans.">
-  <meta name="theme-color" content="#3c503b">
+  <meta name="theme-color" content="#142c3b">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://fxcmhxbzkwyhwfcgudow.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'">
@@ -19,7 +19,7 @@
   <a class="skip-link" href="#main">Skip to content</a>
   <section id="auth-view" class="auth-layout">
     <div class="auth-story">
-      <a class="brand" href="./"><img src="./favicon.svg" alt="" width="36" height="36">together<span>®</span></a>
+      <a class="brand" href="./"><img src="./favicon.svg" alt="" width="36" height="36">together</a>
       <div class="story-content">
         <span class="eyebrow">LESS COORDINATING. MORE LIVING.</span>
         <h1>Good days<br>start <em>together.</em></h1>
@@ -54,28 +54,50 @@
   </section>
 
   <div id="app-view" class="app-layout" hidden>
-    <aside class="sidebar">
-      <a class="brand" href="./"><img src="./favicon.svg" alt="" width="34" height="34">together<span>®</span></a>
-      <div class="workspace-picker"><span class="workspace-symbol">⌂</span><div><label for="workspace-select">YOUR SPACE</label><select id="workspace-select" aria-label="Current shared space"></select></div></div>
-      <nav aria-label="Main navigation"><a class="nav-link active" href="#calendar-section"><span data-icon="calendar"></span> Calendar <span class="nav-dot"></span></a><a class="nav-link" href="#tasks-section"><span data-icon="check-square"></span> To-do list <span id="sidebar-task-count" class="count">0</span></a></nav>
-      <button id="new-workspace" class="text-button new-space"><span>＋</span> Create a space</button>
-      <div class="sidebar-bottom"><div class="sidebar-note"><span class="note-star">✳</span><h3>A little more in sync.</h3><p>Big plans, small errands.<br>Better when shared.</p><button id="sidebar-invite" class="text-button">Bring your people <span>↗</span></button></div><button id="account-button" class="account-button"><span id="user-avatar" class="avatar">Y</span><span><strong id="user-name">You</strong><small id="user-mode">Your shared space</small></span><span data-icon="log-out"></span></button></div>
-    </aside>
+    <header class="app-toolbar">
+      <a class="brand" href="./" aria-label="Together home"><img src="./favicon.svg" alt="" width="32" height="32">together<span class="brand-dot">.</span></a>
+      <div class="workspace-picker"><label for="workspace-select">SHARED SPACE</label><select id="workspace-select" aria-label="Current shared space"></select></div>
+      <nav class="main-nav" aria-label="Main navigation"><a class="nav-link active" href="#calendar-section" aria-current="location"><span data-icon="calendar"></span> Calendar</a><a class="nav-link" href="#tasks-section"><span data-icon="check-square"></span> Tasks <span id="sidebar-task-count" class="count">0</span></a></nav>
+      <div class="toolbar-actions">
+        <button id="lock-space" class="toolbar-button" hidden>Lock</button>
+        <details id="space-menu" class="settings-menu">
+          <summary aria-label="Space and security settings"><span data-icon="settings"></span><span class="settings-label">Settings</span></summary>
+          <div class="settings-panel">
+            <p class="menu-label">SPACE &amp; ACCOUNT</p>
+            <button id="new-workspace">＋ Create a space</button>
+            <button id="invite-button">Invite people</button>
+            <div class="menu-divider"></div>
+            <button id="device-key" hidden>Device key</button>
+            <button id="add-authenticator" hidden>Add another authenticator</button>
+          </div>
+        </details>
+        <button id="account-button" class="account-button" aria-label="Sign out"><span id="user-avatar" class="avatar">Y</span><span class="account-label"><strong id="user-name">You</strong><small id="user-mode">Sign out</small></span><span data-icon="log-out"></span></button>
+      </div>
+    </header>
     <main id="main" class="main-content">
-      <div id="demo-banner" class="demo-banner" hidden><span><strong>Sample-data demo.</strong> Use fictional information only. Changes disappear on reload.</span><button id="leave-demo" class="text-button">Back to sign in <span>↗</span></button></div>
-      <header class="page-header"><div><div class="eyebrow" id="today-label">YOUR EVERYDAY, TOGETHER</div><h1>Room for everything<span>.</span></h1><p>A plan for the busy days. Space for the good ones.</p></div><div class="header-actions"><button id="add-authenticator" class="secondary" hidden>Add another authenticator</button><button id="lock-space" class="secondary" hidden>Lock</button><button id="device-key" class="secondary" hidden>Device key</button><button id="invite-button" class="secondary"><span data-icon="users"></span> Invite people</button></div></header>
-      <div id="vault-banner" class="notice vault-banner" hidden><div><strong>Your encrypted space is locked.</strong><p id="vault-description">Unlock with the recovery key from your password manager. You can choose to remember it in this browser.</p></div><button id="unlock-space" class="primary">Unlock space</button></div>
-      <div class="overview"><div class="overview-intro"><span class="sun-symbol">☼</span><div><strong>Let’s make a little room.</strong><span id="overview-copy">Here’s what’s coming up in your shared space.</span></div></div><div class="overview-stat"><strong id="month-event-count">0</strong><span>plans this month</span></div><div class="overview-stat"><strong id="open-task-count">0</strong><span>things to do</span></div></div>
+      <div id="demo-banner" class="demo-banner" hidden><span><strong>Demo</strong> Sample plans only. Changes disappear on reload.</span><button id="leave-demo" class="text-button">Sign in ↗</button></div>
+      <header class="page-header">
+        <div><div class="eyebrow" id="today-label">YOUR EVERYDAY, TOGETHER</div><h1>Your shared plans<span>.</span></h1></div>
+        <div class="overview"><div class="overview-stat"><strong id="month-event-count">0</strong><span>plans this month</span></div><div class="overview-stat"><strong id="open-task-count">0</strong><span>tasks to do</span></div><span class="live-status" id="sync-status">Ready</span></div>
+      </header>
+      <div id="vault-banner" class="notice vault-banner" hidden><div><strong>Your encrypted space is locked.</strong><p id="vault-description">Unlock with your recovery key or a key remembered in this browser.</p></div><button id="unlock-space" class="primary">Unlock space</button></div>
       <section id="calendar-section" class="calendar-section" aria-label="Shared calendar">
-        <div class="section-heading"><div class="section-title"><h2>Your calendar</h2><span class="live-status" id="sync-status">Ready</span></div><button class="primary" id="add-event"><span>＋</span> New event</button></div>
-        <div class="calendar-card"><div class="calendar-toolbar"><div class="month-heading"><h3 id="month-label"></h3><span id="year-label"></span></div><div class="calendar-navigation"><button id="today-button" class="small-button">Today</button><button id="previous-month" class="icon-button" aria-label="Previous month"><span data-icon="chevron-left"></span></button><button id="next-month" class="icon-button" aria-label="Next month"><span data-icon="chevron-right"></span></button></div></div><div class="weekdays" aria-hidden="true"><span>MON</span><span>TUE</span><span>WED</span><span>THU</span><span>FRI</span><span>SAT</span><span>SUN</span></div><div id="calendar-grid" class="calendar-grid"></div><div class="calendar-footer"><div class="legend"><span><i class="sage"></i>Everyday</span><span><i class="lavender"></i>Work</span><span><i class="peach"></i>Personal</span></div><span>Click a day to see your plans <span>↗</span></span></div></div>
+        <div class="calendar-card">
+          <div class="calendar-toolbar">
+            <div class="month-heading"><h2 id="month-label"></h2><span id="year-label"></span></div>
+            <div class="calendar-controls"><div class="calendar-navigation"><button id="previous-month" class="icon-button" aria-label="Previous month"><span data-icon="chevron-left"></span></button><button id="today-button" class="small-button">Today</button><button id="next-month" class="icon-button" aria-label="Next month"><span data-icon="chevron-right"></span></button></div><button class="primary" id="add-event"><span>＋</span> New event</button></div>
+          </div>
+          <div class="weekdays" aria-hidden="true"><span>MON</span><span>TUE</span><span>WED</span><span>THU</span><span>FRI</span><span>SAT</span><span>SUN</span></div>
+          <div id="calendar-grid" class="calendar-grid"></div>
+          <div class="calendar-footer"><div class="legend"><span><i class="sage"></i>Everyday</span><span><i class="lavender"></i>Work</span><span><i class="peach"></i>Personal</span></div><span class="calendar-hint">Select a date to see its plans</span></div>
+        </div>
         <div id="selected-day" class="selected-day" hidden><div class="section-heading"><h3 id="selected-day-label"></h3><button id="day-add-event" class="text-button">＋ Add a plan</button></div><div id="day-events"></div></div>
       </section>
       <section id="tasks-section" class="tasks-section" aria-label="Shared to-do list">
-        <div class="section-heading"><div><div class="section-title"><h2>The little things</h2><span id="tasks-count" class="count">0</span></div><p>A shared list. A little less on your mind.</p></div><button id="add-task" class="secondary"><span>＋</span> Add a task</button></div>
-        <div class="tasks-card"><div class="tasks-toolbar"><div class="tabs" role="group" aria-label="Filter tasks"><button class="tab active" data-filter="open" aria-pressed="true">To do</button><button class="tab" data-filter="upcoming" aria-pressed="false">Upcoming</button><button class="tab" data-filter="done" aria-pressed="false">Completed</button></div><span class="task-progress" id="task-progress"></span></div><div id="task-list" class="task-list"></div><form id="quick-task-form" class="quick-task"><span>＋</span><input id="quick-task-title" aria-label="New task title" placeholder="Add something to your list…" maxlength="160" required><button class="text-button" type="submit">Add <span>↵</span></button></form></div>
+        <div class="section-heading"><div><div class="section-title"><h2>Tasks</h2><span id="tasks-count" class="count">0</span></div></div><button id="add-task" class="secondary"><span>＋</span> Add a task</button></div>
+        <div class="tasks-card"><div class="tasks-toolbar"><div class="tabs" role="group" aria-label="Filter tasks"><button class="tab active" data-filter="open" aria-pressed="true">To do</button><button class="tab" data-filter="upcoming" aria-pressed="false">Upcoming</button><button class="tab" data-filter="done" aria-pressed="false">Completed</button></div><span class="task-progress" id="task-progress"></span></div><div id="task-list" class="task-list"></div><form id="quick-task-form" class="quick-task"><span>＋</span><input id="quick-task-title" aria-label="New task title" placeholder="Add a task and press Enter…" maxlength="160" required><button class="text-button" type="submit">Add <span>↵</span></button></form></div>
       </section>
-      <footer class="page-footer"><span>Made for the life you share.</span><span>One day at a time. <span>✳</span></span></footer>
+      <footer class="page-footer"><span>Together · plans for the life you share</span><span>Calendar &amp; tasks</span></footer>
     </main>
   </div>
 

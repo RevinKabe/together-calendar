@@ -10,6 +10,7 @@ const icons = {
   calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/>',
   'check-square': '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="m7 12 3 3 7-7"/>',
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2m20 0v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/><circle cx="9" cy="7" r="4"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 3-1 2 2 3-1 1-3 3-1 2-3-2-2 1-3-3-2-3 1-2-2Z"/>',
   'log-out': '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5M21 12H9"/>',
   'chevron-left': '<path d="m15 18-6-6 6-6"/>',
   'chevron-right': '<path d="m9 18 6-6-6-6"/>'
@@ -95,6 +96,7 @@ function setAuthMode(mode) {
   $('auth-status').textContent = '';
 }
 function wipePlaintext() {
+  $('space-menu').open = false;
   const addingAuthenticator = Boolean(pendingAuthenticatorSetup);
   clearAuthenticatorSetup();
   if (addingAuthenticator) $('mfa-dialog').close();
@@ -314,7 +316,7 @@ function render() {
   document.querySelector('.overview').hidden = Boolean(locked);
   if (locked) $('sync-status').textContent = 'Locked';
   const today = new Date(), todayKey = dateKey(today);
-  $('today-label').textContent = today.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).toUpperCase();
+  $('today-label').textContent = today.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
   $('month-label').textContent = month.toLocaleDateString('en-GB', { month: 'long' });
   $('year-label').textContent = month.getFullYear();
   const monthKey = dateKey(month).slice(0, 7);
@@ -322,9 +324,11 @@ function render() {
   const openCount = tasks.filter(task => !task.completed).length;
   ['open-task-count', 'sidebar-task-count', 'tasks-count'].forEach(id => { $(id).textContent = openCount; });
   $('task-progress').textContent = `${tasks.filter(task => task.completed).length} of ${tasks.length} done`;
-  $('calendar-grid').innerHTML = monthCells(month).map(date => {
+  const calendarDays = monthCells(month);
+  while (calendarDays.length > 28 && calendarDays[calendarDays.length - 7].getMonth() !== month.getMonth()) calendarDays.splice(-7);
+  $('calendar-grid').innerHTML = calendarDays.map(date => {
     const day = dateKey(date), dayEvents = eventsOn(events, day);
-    return `<div class="day-cell${date.getMonth() !== month.getMonth() ? ' outside' : ''}${[0, 6].includes(date.getDay()) ? ' weekend' : ''}${selectedDate === day ? ' selected' : ''}"><button class="day-number${day === todayKey ? ' is-today' : ''}" data-day="${day}" aria-label="${esc(fullDate(day))}, ${dayEvents.length} events"${day === todayKey ? ' aria-current="date"' : ''}>${date.getDate()}</button>${dayEvents.slice(0, 2).map(event => `<button class="event-chip ${safeCategory(event.category)}" data-event="${esc(event.id)}" title="${esc(event.title)}${event.start_time ? ` · ${esc(event.start_time.slice(0, 5))}` : ''}"><span>${esc(event.title)}</span>${event.start_time ? `<small>${esc(event.start_time.slice(0, 5))}</small>` : ''}</button>`).join('')}${dayEvents.length > 2 ? `<button class="more-events" data-day="${day}">+${dayEvents.length - 2} more</button>` : ''}</div>`;
+    return `<div class="day-cell${date.getMonth() !== month.getMonth() ? ' outside' : ''}${[0, 6].includes(date.getDay()) ? ' weekend' : ''}${selectedDate === day ? ' selected' : ''}"><button class="day-number${day === todayKey ? ' is-today' : ''}" data-day="${day}" aria-label="${esc(fullDate(day))}, ${dayEvents.length} events"${day === todayKey ? ' aria-current="date"' : ''}>${date.getDate()}</button><span class="day-markers" aria-hidden="true">${dayEvents.slice(0,3).map(event => `<i class="${safeCategory(event.category)}"></i>`).join('')}${dayEvents.length>3 ? '<small>+</small>' : ''}</span>${dayEvents.slice(0, 2).map(event => `<button class="event-chip ${safeCategory(event.category)}" data-event="${esc(event.id)}" title="${esc(event.title)}${event.start_time ? ` · ${esc(event.start_time.slice(0, 5))}` : ''}"><span>${esc(event.title)}</span>${event.start_time ? `<small>${esc(event.start_time.slice(0, 5))}</small>` : ''}</button>`).join('')}${dayEvents.length > 2 ? `<button class="more-events" data-day="${day}">+${dayEvents.length - 2} more</button>` : ''}</div>`;
   }).join('');
   $('selected-day').hidden = !selectedDate;
   if (selectedDate) {
@@ -440,13 +444,34 @@ document.querySelectorAll('[data-close]').forEach(button => { button.onclick = (
 $('add-event').onclick = () => openEditor('event'); $('day-add-event').onclick = () => openEditor('event');
 $('add-task').onclick = () => openEditor('task');
 document.addEventListener('click', event => {
+  if (!event.target.closest('#space-menu') || event.target.closest('.settings-panel button')) $('space-menu').open = false;
   const dayButton = event.target.closest('[data-day]');
-  if (dayButton) { selectedDate = dayButton.dataset.day; render(); }
+  if (dayButton) {
+    selectedDate = dayButton.dataset.day; render();
+    if (matchMedia('(max-width: 640px)').matches) $('selected-day').scrollIntoView({block:'nearest',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
+  }
   const eventButton = event.target.closest('[data-event]'); if (eventButton) openEditor('event', eventButton.dataset.event);
   const taskButton = event.target.closest('[data-task]'); if (taskButton) openEditor('task', taskButton.dataset.task);
   const removeButton = event.target.closest('[data-remove-member]');
   if (removeButton) openRotation(removeButton.dataset.removeMember);
 });
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && $('space-menu').open) {
+    $('space-menu').open = false;
+    $('space-menu').querySelector('summary').focus();
+  }
+});
+let navigationFrame = null;
+function updateNavigation() {
+  navigationFrame = null;
+  const tasksActive = !$('app-view').hidden && !$('tasks-section').hidden && $('tasks-section').getBoundingClientRect().top < innerHeight * .5;
+  document.querySelectorAll('.nav-link').forEach(link => {
+    const active = link.hash === (tasksActive ? '#tasks-section' : '#calendar-section');
+    link.classList.toggle('active', active);
+    if (active) link.setAttribute('aria-current','location'); else link.removeAttribute('aria-current');
+  });
+}
+window.addEventListener('scroll', () => { if (navigationFrame === null) navigationFrame = requestAnimationFrame(updateNavigation); }, {passive:true});
 $('task-list').addEventListener('change', event => {
   const checkbox = event.target.closest('[data-toggle-task]'); if (!checkbox) return;
   const task = tasks.find(item => item.id === checkbox.dataset.toggleTask); if (!task) return;
@@ -506,7 +531,7 @@ $('workspace-form').onsubmit = event => {
     $('workspace-dialog').close(); $('workspace-form').reset(); toast(storageError ? 'Space created, but its key was not remembered. ' + errorMessage(storageError) : 'Your encrypted space is ready.');
   }, 'workspace-status');
 };
-$('invite-button').onclick = showShare; $('sidebar-invite').onclick = showShare;
+$('invite-button').onclick = showShare;
 $('generate-invite').onclick = () => busy($('generate-invite'), async () => {
   const token = result(await client.rpc('create_workspace_invite', { target_workspace: workspace.id }));
   const url = new URL(baseUrl()); url.hash = 'invite=' + token;

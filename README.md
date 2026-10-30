@@ -25,11 +25,11 @@ If switching to separate accounts later, first configure email delivery, then de
 
 Use **Lock** before leaving a device. The app also locks after five minutes without keyboard/pointer activity and on page exit. Login sessions remain in tab memory, so reloading requires sign-in and authenticator verification again. With a remembered key, unlocking after Lock requires a fresh authenticator code; without one, it requires the recovery key.
 
-To register another phone, sign in with your existing authenticator, choose **Add another authenticator**, and verify a fresh code from an existing phone. Name the new phone, generate its QR code, and scan it privately in Microsoft Authenticator using **＋ → Other account**. Enter the new phone's code to finish. Both phones then appear at login and when unlocking a remembered key. The original authenticator, calendar recovery key and encrypted records are unchanged. Supabase may require other devices to sign in again after enrollment. Phone labels are account metadata visible to Supabase; use a simple label without private details.
+To register another phone, sign in with your existing authenticator, choose **Settings → Add another authenticator**, and verify a fresh code from an existing phone. Name the new phone, generate its QR code, and scan it privately in Microsoft Authenticator using **＋ → Other account**. Enter the new phone's code to finish. Both phones then appear at login and when unlocking a remembered key. The original authenticator, calendar recovery key and encrypted records are unchanged. Supabase may require other devices to sign in again after enrollment. Phone labels are account metadata visible to Supabase; use a simple label without private details.
 
 Canceling setup clears its QR/secret from the page and attempts to remove only the unverified factor created by that setup. It never removes existing or successfully verified factors. If the browser closes or the network fails before cleanup, an unused unverified factor may remain; retry with a different phone name or ask the project owner to review unused factors. Never remove the working authenticator to add another phone. The app does not provide a verified-factor deletion control.
 
-If your space is already unlocked, choose **Device key → Remember the key on this device**. The setting starts off and applies separately to each browser/profile and space. It stores a non-extractable Web Crypto key in IndexedDB, scoped to this app, account and encryption-key version. It does not save the recovery-key text or calendar content. Use **Device key → Forget this key and lock** to remove a saved copy. The sign-in page also has **Forget saved keys on this device** to remove all saved keys for this app. Signing out retains remembered keys; other tabs are notified when a saved key is forgotten.
+If your space is already unlocked, choose **Settings → Device key → Remember the key on this device**. The setting starts off and applies separately to each browser/profile and space. It stores a non-extractable Web Crypto key in IndexedDB, scoped to this app, account and encryption-key version. It does not save the recovery-key text or calendar content. Use **Settings → Device key → Forget this key and lock** to remove a saved copy. The sign-in page also has **Forget saved keys on this device** to remove all saved keys for this app. Signing out retains remembered keys; other tabs are notified when a saved key is forgotten.
 
 A key change removes the old saved copy and offers to remember the replacement. Other browsers need the new recovery key once. Cleared/evicted site data, private browsing or disabled storage may require entering it again. If saving fails, the app explicitly says the key was not remembered. Browser/OS memory, clipboard copies and backups cannot be reliably erased by JavaScript. Remembering a key increases trust in the device/browser; MFA is not a hardware or encryption barrier around the local key.
 
@@ -45,7 +45,9 @@ The app has no analytics, remote fonts, third-party scripts or external QR servi
 
 ## Features
 
-- Responsive Monday-first calendar, previous/next month and Today controls.
+- Compact navy/teal interface with a shared toolbar, settings menu and tasks immediately below the calendar.
+- Responsive Monday-first calendar with only the weeks needed for each month, previous/next month and Today controls.
+- On phones, full-cell date targets and colored event dots lead to readable day details; fixed Calendar/Tasks navigation keeps both sections within reach.
 - Events with optional time, category and notes; shared tasks below with due dates, assignments and completion filters.
 - Multiple encrypted spaces, owner-controlled membership and expiring invite links stored as hashes.
 - Optimistic concurrency checks reject stale edits instead of silently overwriting them.
