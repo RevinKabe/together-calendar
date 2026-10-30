@@ -29,6 +29,7 @@ const configured = /^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(config.supabaseUr
 const client = configured && window.supabase ? window.supabase.createClient(config.supabaseUrl, config.supabasePublishableKey, { auth: { persistSession: false, autoRefreshToken: true, detectSessionInUrl: true } }) : null;
 let demo = false, user = null, workspaces = [], workspace = null, events = [], tasks = [], members = [];
 let month = new Date(), selectedDate = null, taskFilter = 'open', authMode = 'signin', editing = null, generation = 0, poll = null, toastTimeout;
+let automaticSyncRunning = false;
 const keys = new Map();
 const remembered = new Map();
 const deviceScope = JSON.stringify([config.supabaseUrl || 'unconfigured', new URL('./', location.href).pathname]);
@@ -166,7 +167,7 @@ async function enterSession(session) {
   await loadWorkspaces(undefined, true);
   if (attempt !== sessionGeneration) return;
   clearInterval(poll);
-  poll = setInterval(() => { if (!document.hidden && workspace && !demo) refresh().catch(() => { $('sync-status').textContent = 'Sync paused · retrying'; }); }, 15000);
+  poll = setInterval(syncAutomatically, 10000);
   if (storage.get('together-invite', true)) $('join-dialog').showModal();
 }
 function updateSpaceSelector() {
@@ -238,6 +239,15 @@ async function loadWorkspaces(preferredId, restoreRemembered = false) {
   updateSpaceSelector();
   if (workspace) { await refresh(); if (!keys.has(workspace?.id) && !storage.get('together-invite',true)) showUnlock(); }
   else { events = []; tasks = []; members = []; render(); if (!storage.get('together-invite',true)) showCreateSpace(); }
+}
+async function syncAutomatically() {
+  if (automaticSyncRunning || document.hidden || !sessionReady || !workspace || demo) return;
+  const expectedUser = user?.id, expectedWorkspace = workspace.id, attempt = sessionGeneration;
+  automaticSyncRunning = true;
+  try { await refresh(); }
+  catch {
+    if (attempt === sessionGeneration && user?.id === expectedUser && workspace?.id === expectedWorkspace && !demo) $('sync-status').textContent = 'Sync paused · retrying';
+  } finally { automaticSyncRunning = false; }
 }
 async function refresh() {
   if (!workspace) return;
@@ -345,7 +355,7 @@ function openEditor(kind, id) {
   if (!demo && !keys.has(workspace.id)) { showUnlock(); return; }
   const item = id ? (kind === 'event' ? events : tasks).find(item => item.id === id) : null;
   if (id && !item) { toast('This item is no longer available.'); return; }
-  editing = { kind, id: item?.id || null, workspaceId: workspace.id };
+  editing = { kind, id: item?.id || null, workspaceId: workspace.id, previous: item ? {...item} : null };
   $('editor-form').reset(); $('editor-status').textContent = '';
   $('editor-heading').textContent = `${item ? 'Edit' : 'New'} ${kind}`;
   $('editor-eyebrow').textContent = kind === 'event' ? 'MAKE A LITTLE PLAN' : 'A LITTLE LESS TO REMEMBER';
@@ -361,7 +371,7 @@ function openEditor(kind, id) {
   $('item-assignee').value = item?.assigned_to || ''; $('item-notes').value = item?.notes || '';
   $('editor-dialog').showModal(); $('item-title').focus();
 }
-async function persistItem(kind, id, values) {
+async function persistItem(kind, id, values, editorVersion) {
   if (!workspace) throw new Error('Create or select a shared space first.');
   const collection = kind === 'event' ? events : tasks;
   if (demo) {
@@ -374,7 +384,7 @@ async function persistItem(kind, id, values) {
   }
   const cached = keys.get(workspace.id);
   if (!cached || cached.epoch !== workspace.key_epoch) throw new Error('Unlock this space with its current key first.');
-  const previous = id ? collection.find(item => item.id === id) : null;
+  const previous = id ? editorVersion || collection.find(item => item.id === id) : null;
   if (id && !previous) throw new Error('This item no longer exists. Refresh and retry.');
   await writeEncryptedRecord(client,workspace,cached.key,user.id,kind,previous,values);
   await refresh();
@@ -484,7 +494,7 @@ $('editor-form').onsubmit = event => {
     const values = { title: cleanTitle($('item-title').value), notes: $('item-notes').value.trim(), category: $('item-category').value };
     if (editing.kind === 'event') { values.event_date = $('item-date').value; values.start_time = $('item-time').value || null; }
     else { values.due_date = $('item-date').value || null; values.assigned_to = $('item-assignee').value.trim(); }
-    await persistItem(editing.kind, editing.id, values); $('editor-dialog').close(); toast('Saved. A little more in sync.');
+    await persistItem(editing.kind, editing.id, values, editing.previous); $('editor-dialog').close(); toast('Saved. A little more in sync.');
   }, 'editor-status');
 };
 $('delete-item').onclick = () => busy($('delete-item'), async () => {
@@ -492,7 +502,7 @@ $('delete-item').onclick = () => busy($('delete-item'), async () => {
   if (!await confirmAction()) return;
   if (demo) { if (editing.kind === 'event') events = events.filter(item => item.id !== editing.id); else tasks = tasks.filter(item => item.id !== editing.id); saveDemo(); }
   else {
-    const previous = (editing.kind === 'event' ? events : tasks).find(item => item.id === editing.id);
+    const previous = editing.previous;
     if (!previous || !keys.has(workspace.id)) throw new Error('Unlock and refresh this space before deleting.');
     const response = await client.from('encrypted_records').delete().eq('id',editing.id).eq('workspace_id',workspace.id).eq('updated_at',previous.updated_at).select('id').maybeSingle();
     result(response); if (!response.data) throw new Error('This item changed on another device. Refresh and retry.'); await refresh();
@@ -762,7 +772,9 @@ if (deviceChannel) deviceChannel.onmessage=event=>{
 ['pointerdown','keydown'].forEach(event=>document.addEventListener(event,()=>{lastActivity=Date.now();},{passive:true}));
 function checkIdle(){if(!demo && keys.size && Date.now()-lastActivity>5*60*1000) lockVault();}
 setInterval(checkIdle,15000);
-document.addEventListener('visibilitychange',checkIdle);
+document.addEventListener('visibilitychange',()=>{checkIdle();if(!document.hidden)syncAutomatically();});
+window.addEventListener('focus',()=>{checkIdle();syncAutomatically();});
+window.addEventListener('online',syncAutomatically);
 window.addEventListener('pagehide',()=>{if(!demo)lockVault(false);});
 async function boot() {
   setAuthMode('signin');
